@@ -17,6 +17,7 @@ erDiagram
     EVENT ||--o{ VERIFICATION_RESULT : has
     EVENT ||--o{ RISK_ASSESSMENT : has
     EVENT ||--o{ FINDING : may_produce
+    RISK_ASSESSMENT ||--o{ ASSESSMENT_REVIEW : reviewed_by
     KEY_RECORD ||--o{ VERIFICATION_RESULT : referenced_by
 
     ORGANIZATION {
@@ -30,12 +31,15 @@ erDiagram
         uuid id PK
         uuid organization_id FK
         uuid event_id
+        int schema_version
+        uuid correlation_id
         string event_type
         string actor_subject
         datetime occurred_at
         datetime received_at
         string subject_ref
         string payload_digest
+        jsonb attributes
     }
     KEY_RECORD {
         uuid id PK
@@ -53,16 +57,23 @@ erDiagram
         uuid key_record_id FK
         string status
         string reason_code
+        string algorithm
+        string protocol_version
         datetime verified_at
     }
     RISK_ASSESSMENT {
         uuid id PK
         uuid organization_id FK
         uuid event_id FK
+        uuid attempt_id
         int score
         string decision
         string model_version
-        jsonb inputs
+        string ruleset_version
+        string feature_version
+        jsonb reason_codes
+        jsonb overrides_applied
+        jsonb feature_snapshot
     }
     FINDING {
         uuid id PK
@@ -71,6 +82,17 @@ erDiagram
         string kind
         string severity
         string status
+        datetime created_at
+    }
+    ASSESSMENT_REVIEW {
+        uuid id PK
+        uuid organization_id FK
+        uuid assessment_id FK
+        string actor_subject
+        string review_status
+        string decision_override
+        string reason_code
+        string rationale
         datetime created_at
     }
     IDEMPOTENCY_RECORD {
@@ -102,6 +124,8 @@ erDiagram
         uuid organization_id FK
         string snapshot_ref
         string format_version
+        string inventory_version
+        datetime inventory_as_of
         string digest
         jsonb document
     }
@@ -119,18 +143,19 @@ erDiagram
 
 - `organization.id` is the tenant primary key. `external_tenant_ref` is unique and mapped only by trusted provisioning/identity configuration, not by caller-supplied event data.
 - Every tenant-owned row carries `organization_id NOT NULL`. References between tenant rows use composite foreign keys `(organization_id, referenced_id)` so a row cannot point across tenants even if application authorization regresses.
-- `event`: `event_id` is a caller-supplied event identity and is not unique because each replay attempt is retained as a distinct event row with a server-generated `id`. Index `(organization_id, event_id)` for replay lookup and `(organization_id, received_at DESC, id DESC)` for cursor pagination; index `(organization_id, actor_subject, received_at DESC)` for audit/query use. Check `event_type` against the four v1 event types. `received_at` and `organization_id` are assigned by the server.
+- `event`: unique `(organization_id, event_id)`. Reuse with a different `Idempotency-Key` returns `409 event_id_conflict`, records a replay finding and a separate `FLAG` risk assessment for the rejected attempt, and does not create a second event row. Index `(organization_id, received_at DESC, id DESC)` for cursor pagination and `(organization_id, actor_subject, received_at DESC)` for audit/query use. Check `event_type` against the four v1 event types and `schema_version`; `attributes` are JSONB validated against the event-type-specific bounded, typed schema (`extra=forbid`). `received_at` and `organization_id` are assigned by the server; `correlation_id` is trace metadata.
 - `key_record`: unique `(organization_id, key_id)` and `(organization_id, provider_ref)` where provider references are unique per tenant; index `(organization_id, lifecycle)`. Store metadata and opaque provider references only, not private/secret key bytes.
-- `verification_result`: composite FK to event and optional key record; index `(organization_id, event_id, verified_at DESC)`. Store explicit status and bounded reason code. Do not overwrite prior attempts.
-- `risk_assessment`: composite FK to event; unique `(organization_id, event_id, model_version)` for one immutable result per version; index `(organization_id, decision, created_at DESC)` as needed for findings/risk queries. Risk inputs contain only approved, non-sensitive facts.
+- `verification_result`: composite FK to event and optional key record; index `(organization_id, event_id, verified_at DESC)`. Check status against `VALID`, `INVALID`, `UNKNOWN_KEY`, `MALFORMED_INPUT`, `VERIFIER_UNAVAILABLE`; store bounded reason code, algorithm, and protocol version. A known disabled or revoked key is `INVALID` with reason `KEY_DISABLED` or `KEY_REVOKED`, never `VALID`. Do not overwrite prior attempts. Every outcome other than `VALID` creates its own finding.
+- `risk_assessment`: composite FK to event when the event was accepted; `attempt_id` distinguishes a rejected duplicate event-ID attempt and is unique within organization for a request attempt. Multiple immutable assessments for the same event/model are permitted when needed to preserve replay attempts. Persist score, final decision, reason codes, model/ruleset/feature versions, overrides, and a bounded typed feature snapshot. Index `(organization_id, event_id, created_at DESC)` and `(organization_id, decision, created_at DESC)`. No PAN, plaintext identity, credential, signature bytes, or sensitive payload is a feature.
 - `finding`: composite FK to event when event-associated; index `(organization_id, status, created_at DESC)` and `(organization_id, event_id, kind)`. Multiple distinct finding kinds for one event are allowed, including a replay and verification failure together.
-- `idempotency_record`: unique `(organization_id, actor_subject, operation, idempotency_key)`; index expiry/created timestamp for cleanup. Request fingerprints use canonical validated inputs. Response snapshot contains only the original redacted API result.
-- `replay_marker`: unique `(organization_id, replay_identity)`; index `(organization_id, first_seen_at DESC)`. Replay identity is derived from validated event identity/nonce according to event type; it is not the HTTP idempotency key. Keep the original marker on conflict; persist the replay attempt as its own event and attach the replay finding to that attempt.
+- `idempotency_record`: unique `(organization_id, actor_subject, operation, idempotency_key)`; state distinguishes in-flight from completed and stores fingerprint/status/redacted response for completed requests; index expiry/created timestamp for cleanup. Request fingerprints use canonical validated business inputs but exclude trace-only `correlation_id` and server-assigned fields. Same key while in-flight returns `409 idempotency_in_progress`; same key with changed fingerprint returns `409 idempotency_conflict`. Response snapshot contains only the original redacted API result.
+- `replay_marker`: unique `(organization_id, replay_identity)`; index `(organization_id, first_seen_at DESC)`. Replay identity is derived from validated event identity/nonce according to event type; it is not the HTTP idempotency key. A repeated event ID under a new idempotency key returns 409 `event_id_conflict` and is recorded as a replay finding with a distinct `FLAG` assessment attempt. A repeated nonce with a new event ID is stored as a separate event with a replay finding and `FLAG`. Keep the original nonce marker on conflict.
+- `assessment_review`: composite FK to assessment; index `(organization_id, assessment_id, created_at DESC)`. Append-only analyst review/override rows include identity-derived actor, status, optional decision override, reason code, and rationale. They never rewrite the original score/assessment. Overrides cannot lower replay or invalid/unknown-key floors.
 - `inventory_asset`: unique `(organization_id, asset_ref)`; index `(organization_id, asset_type, asset_ref)`.
-- `cbom_snapshot`: unique `(organization_id, snapshot_ref)`; index `(organization_id, created_at DESC)`. Store bounded validated metadata, provenance, and digest; reject secrets and plaintext sensitive payloads.
+- `cbom_snapshot`: unique `(organization_id, snapshot_ref)`; index `(organization_id, created_at DESC)`. Generation reads only the authenticated tenant's inventory and records its inventory version/as-of time, provenance, and digest. Store bounded validated metadata; reject secrets and plaintext sensitive payloads.
 - `audit_record`: index `(organization_id, occurred_at DESC, id DESC)` and `(organization_id, actor_subject, occurred_at DESC)`. Application role cannot update/delete audit facts.
 
-All unique identities include `organization_id`, preventing global uniqueness collisions from becoming a cross-tenant information channel. Enforce length, enum, and numeric-range constraints in both application validation and the database where practical. JSONB is restricted to schema-validated, size-bounded non-sensitive facts.
+All unique identities include `organization_id`, preventing global uniqueness collisions from becoming a cross-tenant information channel. Enforce length, enum, and numeric-range constraints in both application validation and the database where practical. Event attributes are typed, event-discriminated, size-bounded JSONB with `extra=forbid`; common attributes include no plaintext identity data or PAN. JSONB feature snapshots are schema-validated, size-bounded, non-sensitive facts. `correlation_id` is not an authorization key.
 
 ## Deletion and retention
 
@@ -140,8 +165,8 @@ No universal retention duration is prescribed here. Before production, configure
 
 ## Transaction boundaries
 
-1. **Event ingestion:** one PostgreSQL transaction claims the idempotency key, inserts a distinct event row with server identity/timestamp, attempts to claim its tenant-scoped replay identity, inserts verification outcome, risk assessment and all required findings, and stores the redacted original response. A replay-marker uniqueness conflict leaves the original marker intact and produces a replay finding and `FLAG` decision for the new attempt. Commit before returning success. Idempotency uniqueness conflicts are resolved by reading the committed idempotency record and comparing its fingerprint. If required findings cannot be persisted, do not acknowledge success.
+1. **Event ingestion:** require an idempotency key; one PostgreSQL transaction claims it, inserts the event with server identity/timestamp, claims tenant-scoped replay identity, inserts verification outcome, risk assessment and every required finding, and stores the redacted original response. Missing key is `400 idempotency_key_required`; same key in flight is `409 idempotency_in_progress`; changed body under the same key is `409 idempotency_conflict`. A duplicate event ID under a different key creates a separate replay finding and `FLAG` attempt assessment, then returns `409 event_id_conflict` without a second event row. A repeated nonce with a different event ID is persisted as a new replay event, gets a separate finding, and final decision `FLAG`. Commit required finding/idempotency outcomes before returning their response.
 2. **Provider operation:** provider calls cannot participate in a PostgreSQL transaction. Treat them as explicit external steps. Do not report a key rotation/disable as complete until the provider result and local lifecycle/audit update are confirmed; reconcile uncertain outcomes explicitly rather than silently retrying a non-idempotent provider action.
 3. **Audit and key lifecycle:** persist state change and corresponding audit record in the same database transaction. Application database permissions prevent ordinary mutation of audit rows.
-4. **Reads:** every query includes authenticated `organization_id`; pagination cursors bind organization, filters, and stable ordering.
+4. **Reads:** every query includes authenticated `organization_id`; pagination cursors bind organization, filters, and stable ordering and are HMAC-SHA-256 signed. Cursor keys are stored in the approved secret provider, never in the database or logs.
 5. **Rate limiting:** perform atomic budget updates in PostgreSQL so application replicas share a limit without a broker or local bypass.

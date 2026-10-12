@@ -9,7 +9,9 @@ EncryptPlus needs explicit algorithm handling and a migration path, but selectin
 
 ## Decision
 
-Do not select or invent a post-quantum algorithm in this design phase. Before selection, require documented standards status, vetted maintained library/provider support, key custody and lifecycle support, interoperability with counterparties, threat/security review, performance measurements on target deployment, migration/rotation and downgrade-resistance plan, and versioned API/data compatibility. Accept only explicitly configured allowlisted algorithms. A missing capability or unsupported algorithm fails closed; never silently downgrade.
+Do not select a post-quantum algorithm in this design phase. The signed-event v1 allowlist is exactly `ED25519`, `ECDSA_P256_SHA256` (P-256 ECDSA, SHA-256, DER encoding), and `RSA_PSS_SHA256_3072` (RSA-PSS/SHA-256, at least 3072-bit modulus, exactly 32-byte salt). These are protocol identifiers, not negotiation preferences. A key/algorithm mismatch or unsupported identifier is rejected; no fallback or downgrade is allowed.
+
+Before adding a post-quantum or hybrid algorithm, require documented standards status, vetted maintained library/provider support, key custody and lifecycle support, interoperability with counterparties, threat/security review, performance measurements on target deployment, migration/rotation and downgrade-resistance plan, and versioned API/data compatibility.
 
 ## Consequences
 
