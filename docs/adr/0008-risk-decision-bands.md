@@ -17,7 +17,7 @@ Apply hard decision overrides without falsifying the base score:
 - `MALFORMED_INPUT` and `VERIFIER_UNAVAILABLE` each produce their own finding and are recorded as inputs; neither claims validity or may be silently treated as `VALID`.
 - Replay forces `FLAG` regardless of base score and verification status, and produces a replay finding.
 
-If multiple rules apply, select the most restrictive decision (`FLAG` > `VERIFY` > `APPROVE`). Persist the base score, verification status/reason, override reasons, final decision, and all three versions separately. Analyst review is append-only and may override only the final decision, with actor and reason; it cannot change score or reduce replay/verification hard floors. A duplicate event ID submitted with another idempotency key is recorded as a replay finding and separate `FLAG` assessment attempt before returning 409 `event_id_conflict`.
+If multiple rules apply, select the most restrictive decision (`FLAG` > `VERIFY` > `APPROVE`). Persist the base score, verification status/reason, override reasons, final decision, and all three versions separately. Analyst review is append-only and may override only the final decision, with actor and reason; it cannot change score or reduce replay/verification hard floors. Replay responses, findings, and separate `FLAG` attempt assessments follow the canonical rule in [architecture.md](../architecture.md#replay-handling) and [api-contracts.md](../api-contracts.md#common-contract).
 
 ## Consequences
 

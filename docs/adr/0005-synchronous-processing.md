@@ -14,7 +14,7 @@ Validate bounded typed event attributes, perform applicable canonical-message ve
 ## Consequences
 
 - Bound request, provider, and database timeouts and payload sizes.
-- Event and signed-message ingestion require `Idempotency-Key`: same key/same completed request returns its original result; same key/different request returns 409 `idempotency_conflict`; same key while in flight returns 409 `idempotency_in_progress`; missing key returns 400 `idempotency_key_required`. Fingerprints exclude trace-only `correlation_id`. Reusing an organization-scoped `event_id` with another key returns 409 `event_id_conflict` and records a replay finding plus a `FLAG` attempt assessment. Separately detect reused signed nonces; signatures require a nonce.
+- Event and signed-message ingestion require `Idempotency-Key`; exact idempotency and replay response behavior is defined in [api-contracts.md](../api-contracts.md#common-contract) and [architecture.md](../architecture.md#replay-handling). Fingerprints exclude trace-only `correlation_id`. Signatures require a nonce.
 - All request validation errors use RFC 9457 with HTTP 400, including out-of-window event timestamps, missing nonce, invalid cursor, and limit over max.
 - Database/provider outages are visible errors; the service never fabricates a success response.
 - Throughput is bounded by synchronous provider/database latency; revisit only with measured requirements and a new ADR.

@@ -32,7 +32,7 @@ Re-probed on 2026-10-12 using PowerShell. Values of Git user configuration and d
 | `node --version` | Node.js available; `v24.19.0`. |
 | `Test-NetConnection pypi.org -Port 443` | `TcpTestSucceeded: True`; selected remote address `2a04:4e42::223` (IPv6). This establishes TCP reachability only, not package installation or broader network availability. |
 | PostgreSQL local/environment probe | `Test-NetConnection 127.0.0.1 -Port 5432`: `TcpTestSucceeded: False`; `DATABASE_URL is set: False`; `TEST_DATABASE_URL is set: False`. No environment-variable values were read. |
-| Current Git state | Branch `main`; local branch is ahead of its `origin/main` tracking ref by 2 commits. Last observed local-tracking `origin/main` commit was `9bbb256`. The working tree was clean before editing this snapshot. No live remote fetch was performed. |
+| Current Git state at this re-probe | Branch `main`; HEAD and local-tracking `origin/main` both pointed to `5615dae` before the current documentation edits. The working tree had documentation changes in progress at probe time. No live remote fetch or push was performed. |
 | Foundation files | `pyproject.toml`, `uv.lock`, `alembic.ini`, and `tests/` were absent at re-probe time. |
 
 ## Current repository disposition
@@ -64,7 +64,7 @@ Phase 0 added `.gitignore` and the initial assessment/ADR, then the Phase 0 file
 - **High — Application Control:** uv reported that Application Control blocked inspection of a Python 3.14 executable. Python 3.12.14 itself ran successfully via uv offline. If an approved uv-installed tool is blocked, stop and report the block rather than bypassing the policy. Named possible type-checker fallback: mypy instead of pyright; use it only if needed and record the choice in an ADR before adoption.
 - **Medium — Windows tooling hazards:** System Git has `core.autocrlf=true`; `.gitattributes` specifies LF. Continue checking actual staged line endings. Windows path-length limits and PowerShell quoting/escaping can also break deep paths or commands; use bounded paths and carefully quoted PowerShell-compatible invocations.
 - **High — secrets in environment variables:** `DATABASE_URL`, `TEST_DATABASE_URL`, provider credentials, and other secret configuration must not be printed, copied into documentation, source, logs, crash reports, or command output. Presence checks must not reveal values. Prefer the approved secret-injection mechanism and restrict process access.
-- **Medium — remote and CI readiness:** `origin` and a local `origin/main` tracking ref exist, but no live fetch/push or CI run was performed in this re-probe. Docker is unavailable locally; Dockerfile, compose, and container-scan items remain unverified until the remote workflow runs successfully.
+- **Medium — remote and CI readiness:** `origin` and a local `origin/main` tracking ref existed and matched at the start of this re-probe, but no live fetch/push or CI run was performed. Docker is unavailable locally; Dockerfile, compose, and container-scan items remain unverified until the remote workflow runs successfully.
 - **Medium — no implementation/test baseline:** Foundation manifests, migrations, application code, and tests were absent at re-probe time; there is no executable behavior or regression baseline.
 - **Medium — network scope:** TCP to `pypi.org:443` succeeded over IPv6; TLS/package download, other endpoints, and OIDC/KMS availability were not tested.
 

@@ -87,7 +87,8 @@ sequenceDiagram
     A->>A: Validate JWT, role/scope, schema, tenant context
     A->>I: Validated request + identity context
     I->>I: Canonical request fingerprint
-    I->>P: Begin transaction; claim tenant/actor/route/key
+    I->>P: Begin transaction and claim tenant/actor/route/key
+    P-->>I: Claim acquired
     alt Completed key, same fingerprint
         P-->>I: Previously committed response
         I-->>C: Original result (replayed HTTP response)
@@ -100,28 +101,33 @@ sequenceDiagram
     else New idempotency key
         I->>I: Assign organization_id and received_at
         I->>P: Check tenant-scoped replay identity
-        alt event_id already exists for organization
-            P-->>I: Existing event identity
-            I->>R: Record replay finding and FLAG assessment
-            I->>P: Persist 409 event_id_conflict outcome
-            I-->>C: 409 with replay finding/assessment references
-        else New event_id
+        alt Replay detected
+            I->>R: Apply the replay handling rule and create finding
+            I->>P: Commit finding and idempotency outcome
+            I-->>C: 409 conflict response after commit
+        else No replay
             opt Signed event
                 I->>K: Verify canonical message using tenant key handle and allowlisted algorithm
                 K-->>I: VALID, INVALID, UNKNOWN_KEY, MALFORMED_INPUT, or VERIFIER_UNAVAILABLE
                 I->>P: Persist verification status and reason code
             end
             I->>R: Persist risk features, versions, score, decision and findings
-            I->>P: Persist event and original response; commit atomically
+            I->>P: Persist event and original response, then commit atomically
             P-->>I: Commit
             I-->>C: 201 created with event, verification, risk and finding refs
         end
     end
 ```
 
-The idempotency record and result are committed with the event. Same key/same request in flight returns 409 `idempotency_in_progress`; missing key is 400 `idempotency_key_required`; same event ID under a different key is 409 `event_id_conflict` and records a replay finding plus `FLAG` assessment. A new HTTP idempotency key does not make a previously observed nonce fresh. Signed messages require a nonce. Concurrent claims are protected by database uniqueness. A provider or database failure before commit returns an explicit error and no success-shaped fallback. Each verification failure status commits its own finding; inability to durably record it prevents success.
+Idempotency records, committed event results, and required findings are durable before a response is sent. Same-key in-flight requests return 409 `idempotency_in_progress`; missing required keys return 400 `idempotency_key_required`. Signed messages require a nonce. Concurrent claims are protected by database uniqueness. A provider or database failure before commit returns an explicit error and no success-shaped fallback. Each verification failure status commits its own finding; inability to durably record it prevents success.
 
-TrustShield features are derived only from allowlisted event attributes and recorded facts: transaction amount/currency/channel/country/device token/auth method; login method/outcome/channel/country/device token/factor count; signed-message purpose/payload size; key-lifecycle reported action/status/source. Additional features include event-time age, replay state, and verification status/reason. Raw identity, PAN, credentials, plaintext payloads, and signature bytes are excluded. Persist an immutable, bounded feature snapshot with `feature_version`, `model_version`, `ruleset_version`, `reason_codes`, and `overrides_applied`. Score 0-39 maps to APPROVE, 40-69 VERIFY, 70-100 FLAG. Invalid/unknown-key force at least VERIFY; replay forces FLAG. A valid signature never reduces score.
+### Replay handling
+
+A replay is either an already accepted `(organization_id, event_id)` submitted with a new idempotency key (`409 event_id_conflict`) or reuse of a signed nonce (`409 replay_detected`). Each distinct conflicting attempt commits one finding linked to the original event and a separate `FLAG` attempt assessment, and returns both references. It never creates/replaces the original event or modifies its assessment. A retry with the same idempotency key returns the stored conflict response without another finding. Commit the finding and idempotency outcome atomically before sending 409; if that commit fails, return 503 and do not send a 409 implying the finding was persisted.
+
+JSON canonicalization and v1 number handling are defined in [ADR-0010](./adr/0010-json-canonicalization-and-numbers.md). Deployment-dependent retention, replay freshness, rate quotas, and production KMS/HSM selection remain **needs owner decision** as tracked in [ADR-0011](./adr/0011-open-decisions.md).
+
+TrustShield features are derived only from allowlisted event attributes and recorded facts: transaction amount/currency/channel/country/device token/auth method; login method/outcome/channel/country/device token/factor count; signed-message purpose/payload size; key-lifecycle reported action/status/source. Monetary features use integer minor units; all numeric signed-event attributes are bounded integers and contain no floating-point values. Additional features include event-time age, replay state, and verification status/reason. Raw identity, PAN, credentials, plaintext payloads, and signature bytes are excluded. Persist an immutable, bounded feature snapshot with `feature_version`, `model_version`, `ruleset_version`, `reason_codes`, and `overrides_applied`. Score 0-39 maps to APPROVE, 40-69 VERIFY, 70-100 FLAG. Invalid/unknown-key force at least VERIFY; replay forces FLAG. A valid signature never reduces score.
 
 ## Key-management boundary
 
@@ -137,10 +143,8 @@ Persist only provider name/configuration reference, tenant-scoped key identifier
 | Unknown verification key | Record `UNKNOWN_KEY`, persist a separate finding, and impose at least `VERIFY` |
 | Malformed signed input | Record `MALFORMED_INPUT` and a separate finding; never classify as valid |
 | Verification provider unavailable/timeout | Record `VERIFIER_UNAVAILABLE` and a separate finding when the result can be durably recorded; otherwise fail the request without claiming success |
-| Replayed event identity/nonce | Persist a replay finding and decision `FLAG`, independent of signature validity |
 | PostgreSQL unavailable or transaction failure | Return an explicit service failure; do not acknowledge an event as persisted |
 | Idempotency key reused with different request | Return 409 `idempotency_conflict`; do not overwrite the original result |
-| Same event ID submitted under another idempotency key | Return 409 `event_id_conflict`; record a replay finding and `FLAG` assessment for the attempt |
 | Signature without nonce | Return 400 `nonce_required`; do not verify or accept the message |
 | `KEY_LIFECYCLE_CHANGE` event ingested | Record event only; do not mutate key state |
 | Cursor authentication failure or limit over max | Return 400 `invalid_cursor` or `limit_exceeded`; never bypass cursor tenant binding or silently clamp |
