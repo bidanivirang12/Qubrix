@@ -1,0 +1,1 @@
+"""Qubrix application package."""

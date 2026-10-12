@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://qubrix_app:ci-owner-password@localhost:5432/qubrix_dev
+      TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:ci-owner-password@localhost:5432/qubrix_test
+      RUNTIME_DATABASE_URL: postgresql+psycopg://qubrix_runtime:ci-runtime-password@localhost:5432/qubrix_dev
+      RUNTIME_TEST_DATABASE_URL: postgresql+psycopg://qubrix_runtime:ci-runtime-password@localhost:5432/qubrix_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Initialize isolated test databases and roles
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE qubrix_app LOGIN PASSWORD 'ci-owner-password';
+          CREATE ROLE qubrix_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'ci-runtime-password';
+          CREATE DATABASE qubrix_dev OWNER qubrix_app;
+          CREATE DATABASE qubrix_test OWNER qubrix_app;
+          GRANT CONNECT ON DATABASE qubrix_dev TO qubrix_runtime;
+          GRANT CONNECT ON DATABASE qubrix_test TO qubrix_runtime;
+          SQL
+          for db in qubrix_dev qubrix_test; do
+            PGPASSWORD=postgres psql -h localhost -U postgres -d "$db" -v ON_ERROR_STOP=1 \
+              -c "GRANT USAGE ON SCHEMA public TO qubrix_runtime" \
+              -c "SET ROLE qubrix_app" \
+              -c "ALTER DEFAULT PRIVILEGES FOR ROLE qubrix_app IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO qubrix_runtime" \
+              -c "ALTER DEFAULT PRIVILEGES FOR ROLE qubrix_app IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO qubrix_runtime" \
+              -c "RESET ROLE"
+          done
+      - name: Lock check
+        run: uv lock --check
+      - name: Sync
+        run: uv sync --locked
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Pyright
+        run: uv run pyright
+      - name: Migrate fresh test database
+        run: uv run alembic upgrade head
+      - name: Tests
+        run: uv run pytest
+      - name: Docker build
+        run: docker build -t qubrix:ci .
