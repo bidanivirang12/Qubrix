@@ -7,12 +7,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.10-bookworm
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -24,50 +29,137 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-    env:
-      DATABASE_URL: postgresql+psycopg://qubrix_app:ci-owner-password@localhost:5432/qubrix_dev
-      TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:ci-owner-password@localhost:5432/qubrix_test
-      RUNTIME_DATABASE_URL: postgresql+psycopg://qubrix_runtime:ci-runtime-password@localhost:5432/qubrix_dev
-      RUNTIME_TEST_DATABASE_URL: postgresql+psycopg://qubrix_runtime:ci-runtime-password@localhost:5432/qubrix_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v5
+
+      - uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
         with:
           enable-cache: true
-      - name: Initialize isolated test databases and roles
+
+      - id: bootstrap
+        name: Bootstrap isolated CI databases and roles
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: postgres
+          PGPASSWORD: postgres
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE qubrix_app LOGIN PASSWORD 'ci-owner-password';
-          CREATE ROLE qubrix_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'ci-runtime-password';
-          CREATE DATABASE qubrix_dev OWNER qubrix_app;
-          CREATE DATABASE qubrix_test OWNER qubrix_app;
-          GRANT CONNECT ON DATABASE qubrix_dev TO qubrix_runtime;
-          GRANT CONNECT ON DATABASE qubrix_test TO qubrix_runtime;
-          SQL
-          for db in qubrix_dev qubrix_test; do
-            PGPASSWORD=postgres psql -h localhost -U postgres -d "$db" -v ON_ERROR_STOP=1 \
-              -c "GRANT USAGE ON SCHEMA public TO qubrix_runtime" \
-              -c "SET ROLE qubrix_app" \
-              -c "ALTER DEFAULT PRIVILEGES FOR ROLE qubrix_app IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO qubrix_runtime" \
-              -c "ALTER DEFAULT PRIVILEGES FOR ROLE qubrix_app IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO qubrix_runtime" \
-              -c "RESET ROLE"
-          done
+          owner_password="$(openssl rand -hex 32)"
+          runtime_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$owner_password"
+          echo "::add-mask::$runtime_password"
+          echo "owner_password=$owner_password" >> "$GITHUB_OUTPUT"
+          echo "runtime_password=$runtime_password" >> "$GITHUB_OUTPUT"
+          psql \
+            --set ON_ERROR_STOP=1 \
+            --set owner_password="$owner_password" \
+            --set runtime_password="$runtime_password" \
+            --set dev_database=qubrix_dev \
+            --set test_database=qubrix_test \
+            --file scripts/bootstrap_db.sql
+
       - name: Lock check
         run: uv lock --check
+
       - name: Sync
         run: uv sync --locked
+
       - name: Ruff
         run: uv run ruff check .
+
       - name: Ruff format
         run: uv run ruff format --check .
+
       - name: Pyright
         run: uv run pyright
+
+      - name: Export locked production requirements
+        run: >-
+          uv export --locked --no-dev --no-emit-project
+          --format requirements-txt
+          --output-file "$RUNNER_TEMP/qubrix-requirements.txt"
+
+      - name: Audit locked Python dependencies
+        run: uvx --from pip-audit==2.9.0 pip-audit --strict --requirement "$RUNNER_TEMP/qubrix-requirements.txt"
+
       - name: Migrate fresh test database
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${{ steps.bootstrap.outputs.owner_password }}@localhost:5432/qubrix_test
         run: uv run alembic upgrade head
-      - name: Tests
-        run: uv run pytest
-      - name: Docker build
-        run: docker build -t qubrix:ci .
+
+      - name: Tests with coverage
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${{ steps.bootstrap.outputs.owner_password }}@localhost:5432/qubrix_test
+          RUNTIME_TEST_DATABASE_URL: postgresql+psycopg://qubrix_runtime:${{ steps.bootstrap.outputs.runtime_password }}@localhost:5432/qubrix_test
+        run: >-
+          uv run pytest
+          --cov=app
+          --cov-report=term-missing
+          --cov-fail-under=80
+
+      - name: Build container image
+        run: docker build --tag qubrix:ci .
+
+      - name: Scan container image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: qubrix:ci
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Start container for health smoke test
+        env:
+          RUNTIME_DATABASE_URL: postgresql+psycopg://qubrix_runtime:${{ steps.bootstrap.outputs.runtime_password }}@127.0.0.1:5432/qubrix_dev
+        run: |
+          docker run --detach \
+            --name qubrix-smoke \
+            --network host \
+            --env RUNTIME_DATABASE_URL \
+            qubrix:ci
+
+      - name: Verify container health endpoints
+        run: |
+          ready=false
+          for attempt in $(seq 1 30); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:8000/health/ready || true)"
+            if [ "$status" = "200" ]; then
+              ready=true
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker logs qubrix-smoke
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "true" ]; then
+            docker logs qubrix-smoke
+            exit 1
+          fi
+          for endpoint in live ready; do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              "http://127.0.0.1:8000/health/$endpoint" || true)"
+            if [ "$status" != "200" ]; then
+              echo "/health/$endpoint returned HTTP $status, expected 200"
+              exit 1
+            fi
+          done
+
+      - name: Stop smoke-test container
+        if: always()
+        run: docker rm --force qubrix-smoke || true

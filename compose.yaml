@@ -1,19 +1,20 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16.10-bookworm
     environment:
-      POSTGRES_USER: qubrix_app
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the local environment}
-      POSTGRES_DB: qubrix_dev
+      POSTGRES_DB: postgres
+      OWNER_DB_PASSWORD: ${OWNER_DB_PASSWORD:?Set OWNER_DB_PASSWORD in the local environment}
       RUNTIME_DB_PASSWORD: ${RUNTIME_DB_PASSWORD:?Set RUNTIME_DB_PASSWORD in the local environment}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - qubrix-postgres:/var/lib/postgresql/data
-      - ./docker/01-create-runtime.sql:/docker/01-create-runtime.sql:ro
+      - ./scripts/bootstrap_db.sql:/docker/bootstrap_db.sql:ro
       - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/00-create-runtime.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U qubrix_app -d qubrix_dev"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -26,7 +27,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/qubrix_test
+      TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${OWNER_DB_PASSWORD:?Set OWNER_DB_PASSWORD}@postgres:5432/qubrix_test
     command: ["uv", "run", "--frozen", "alembic", "upgrade", "head"]
     restart: "no"
 
