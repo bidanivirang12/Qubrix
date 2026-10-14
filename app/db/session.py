@@ -11,14 +11,17 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.settings import Settings
-from app.db.safety import psycopg_async_url
+from app.db.connection import psycopg_async_url
+from app.db.safety import validate_database_url
 
 
 def create_database_engine(settings: Settings) -> AsyncEngine:
     if settings.runtime_database_url is None:
         raise ValueError("RUNTIME_DATABASE_URL is required for application database access")
+    runtime_database_url = settings.runtime_database_url.get_secret_value()
+    validate_database_url(runtime_database_url)
     return create_async_engine(
-        psycopg_async_url(settings.runtime_database_url.get_secret_value()),
+        psycopg_async_url(runtime_database_url),
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
         pool_pre_ping=True,

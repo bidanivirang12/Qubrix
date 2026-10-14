@@ -39,6 +39,7 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="TEST_DATABASE_URL",
     )
+    allow_nonlocal_test_database_host: bool = False
     database_url: SecretStr | None = PydanticField(
         default=None,
         validation_alias="DATABASE_URL",
@@ -150,6 +151,8 @@ class Settings(BaseSettings):
             problems.extend(self._runtime_database_url_problems())
         if self.runtime_test_database_url is not None:
             problems.append("runtime_test_database_url is forbidden in production")
+        if self.allow_nonlocal_test_database_host:
+            problems.append("allow_nonlocal_test_database_host is forbidden in production")
         if self.oidc_provider != "oidc":
             problems.append("the development OIDC provider is forbidden")
         if self.oidc_issuer is None:

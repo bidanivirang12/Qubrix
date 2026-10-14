@@ -8,13 +8,22 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.db.safety import psycopg_async_url, require_test_database
+from app.core.settings import Settings
+from app.db.connection import psycopg_async_url
+from app.db.safety import UnsafeDatabaseTarget, require_test_database, verify_current_database
+
+
+def validated_test_database_name(database_url: str) -> str:
+    return require_test_database(
+        database_url,
+        allow_nonlocal_host=Settings().allow_nonlocal_test_database_host,
+    )
 
 
 @pytest.mark.asyncio
 async def test_runtime_table_privileges_match_explicit_allowlist() -> None:
     database_url = os.environ["TEST_DATABASE_URL"]
-    require_test_database(database_url)
+    validated_test_database_name(database_url)
     engine = create_async_engine(psycopg_async_url(database_url), pool_pre_ping=True)
     expected_table_privileges: dict[str, set[str]] = {
         "alembic_version": set(),
@@ -118,10 +127,11 @@ async def test_runtime_table_privileges_match_explicit_allowlist() -> None:
 @pytest.mark.asyncio
 async def test_migrated_empty_database_has_foundation_tables() -> None:
     database_url = os.environ["TEST_DATABASE_URL"]
-    require_test_database(database_url)
+    validated_test_database_name(database_url)
     engine = create_async_engine(psycopg_async_url(database_url), pool_pre_ping=True)
     try:
         async with engine.connect() as connection:
+            await connection.run_sync(verify_current_database, "qubrix_test")
             rows = await connection.execute(
                 text(
                     "SELECT table_name FROM information_schema.tables "
@@ -141,15 +151,29 @@ async def test_migrated_empty_database_has_foundation_tables() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_connection_database_check_rejects_mismatched_name() -> None:
+    database_url = os.environ["TEST_DATABASE_URL"]
+    validated_test_database_name(database_url)
+    engine = create_async_engine(psycopg_async_url(database_url), pool_pre_ping=True)
+    try:
+        async with engine.connect() as connection:
+            with pytest.raises(UnsafeDatabaseTarget, match="does not match"):
+                await connection.run_sync(verify_current_database, "qubrix_wrong_test")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_runtime_role_cannot_update_or_delete_audit_records() -> None:
     database_url = os.environ.get("RUNTIME_TEST_DATABASE_URL")
     if not database_url:
         pytest.fail("RUNTIME_TEST_DATABASE_URL is required for the audit permission test")
-    require_test_database(database_url)
+    validated_test_database_name(database_url)
     engine = create_async_engine(psycopg_async_url(database_url), pool_pre_ping=True)
     tenant_ref = f"foundation-audit-test-{uuid4()}"
     try:
         async with engine.begin() as connection:
+            await connection.run_sync(verify_current_database, "qubrix_test")
             grants = await connection.execute(
                 text(
                     "SELECT "

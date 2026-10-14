@@ -49,6 +49,16 @@ and roll out all replicas together; existing signed cursors will become invalid.
 Never print the secret. Production requires a strong, non-placeholder value and
 does not read `.env`.
 
+Destructive and test connections accept only lowercase `qubrix_test` or
+`qubrix_<name>_test` database names and local hosts (`localhost`, `127.0.0.1`,
+or `::1`).
+The only accepted URL query option is `sslmode`; target-changing libpq options
+such as `dbname`, `host`, `hostaddr`, `service`, `options`, and `passfile` are
+rejected. The CI/Compose-only PostgreSQL service hostname `postgres` requires
+the explicit `QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST=true` opt-in. Do not set
+that opt-in in production. Alembic and the test-session fixture verify
+`current_database()` after connecting before doing migration or fixture work.
+
 For Compose, set `POSTGRES_PASSWORD`, `OWNER_DB_PASSWORD`, and
 `RUNTIME_DB_PASSWORD` in the environment before running `docker compose up`.
 The PostgreSQL initialization wrapper invokes the same

@@ -38,6 +38,7 @@ def isolate_settings_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         "QUBRIX_ALLOWED_ALGORITHMS",
         "QUBRIX_KEY_PROVIDER",
         "QUBRIX_CORS_ORIGINS",
+        "QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST",
         "QUBRIX_CORS_ALLOW_CREDENTIALS",
         "QUBRIX_REQUEST_BODY_MAX_BYTES",
         "QUBRIX_REPLAY_FRESHNESS_WINDOW_SECONDS",
@@ -91,6 +92,10 @@ def production_settings(**overrides: Any) -> dict[str, Any]:
         ({"oidc_provider": "development"}, "development OIDC provider"),
         ({"key_provider": "software"}, "software key provider"),
         ({"runtime_database_url": None}, "runtime_database_url is required"),
+        (
+            {"allow_nonlocal_test_database_host": True},
+            "allow_nonlocal_test_database_host is forbidden in production",
+        ),
         ({"oidc_issuer": None}, "oidc_issuer is required"),
         ({"oidc_audience": None}, "oidc_audience is required"),
         ({"jwks_url": None}, "jwks_url is required"),

@@ -27,6 +27,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST: "true"
       TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${OWNER_DB_PASSWORD:?Set OWNER_DB_PASSWORD}@postgres:5432/qubrix_test
     command: ["uv", "run", "--frozen", "alembic", "upgrade", "head"]
     restart: "no"
