@@ -201,6 +201,21 @@ def test_invalid_production_oidc_issuer_is_rejected(issuer: str) -> None:
         Settings.model_validate(production_settings(oidc_issuer=issuer))
 
 
+def test_production_rejects_local_http_jwks_url() -> None:
+    with pytest.raises(ValidationError, match="jwks_url must be HTTPS in production"):
+        Settings.model_validate(production_settings(jwks_url="http://localhost:8765/keys"))
+
+
+def test_test_environment_accepts_local_http_jwks_url() -> None:
+    settings = Settings.model_validate(
+        {
+            "environment": "test",
+            "jwks_url": "http://localhost:8765/keys",
+        }
+    )
+    assert settings.jwks_url == "http://localhost:8765/keys"
+
+
 @pytest.mark.parametrize(
     "origins",
     [

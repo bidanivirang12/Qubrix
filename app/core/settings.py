@@ -117,16 +117,19 @@ class Settings(BaseSettings):
         if (
             len(value) > 2_048
             or value != value.strip()
-            or parsed.scheme != "https"
             or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
             or parsed.fragment
-        ):
-            raise ValueError(
-                "jwks_url must be an HTTPS URL without credentials, query, or fragment"
+            or not (
+                parsed.scheme == "https"
+                or (
+                    parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+                )
             )
+        ):
+            raise ValueError("jwks_url must be HTTPS, except for an HTTP localhost test URL")
         return value
 
     @model_validator(mode="after")
@@ -165,6 +168,8 @@ class Settings(BaseSettings):
             problems.append("oidc_audience is required")
         if self.jwks_url is None:
             problems.append("jwks_url is required")
+        elif not self._is_https_url(self.jwks_url, allow_path=True):
+            problems.append("jwks_url must be HTTPS in production")
         if self.key_provider != "kms":
             problems.append("the software key provider is forbidden")
         if not self.cors_origins:

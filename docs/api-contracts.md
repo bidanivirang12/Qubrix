@@ -4,6 +4,8 @@
 
 - Business endpoints use `/api/v1`; liveness/readiness probes are documented separately below. The service is an OIDC bearer-token resource server; it has no local-password or tenant/role administration endpoints.
 - Validate JWT signature via configured issuer JWKS, issuer, audience, expiry/not-before, and accepted signing algorithm. The JWT `organization_id` claim is mapped through trusted server-side tenant provisioning; actor is `sub`; roles are the `roles` string array; scopes are the OAuth `scope` space-delimited string. These claims are accepted only after token validation. Tenant, actor, roles, and scopes never come from request bodies. Role and tenant management lives in the IdP/provisioning system, not this API.
+- Require string `sub`, UUID string `organization_id`, `roles` as an array of strings containing only `ADMIN`, `SECURITY_ANALYST`, `AUDITOR`, or `SERVICE`, and `scope` as a space-delimited string. Unknown roles are rejected to avoid silently granting ambiguous or misspelled identities. Issuer and audience must exactly match configured values; `exp`, `nbf`, and `iat` are required and validated with configured clock-skew leeway. Claim sets are limited to 32 claims and bearer tokens to 16 KiB.
+- JWKS is fetched only from the configured `QUBRIX_JWKS_URL`, over HTTPS in production. Redirects are disabled, responses are bounded to 256 KiB and 32 keys, and cache lifetime and unknown-`kid` refresh rate are bounded. Token `jku`, `x5u`, and embedded `jwk` header members do not select keys or URLs.
 - Each JSON request body has required `schema_version: 1` and a client-generated UUID `correlation_id`; nested typed objects reject unknown fields (`extra=forbid`). `correlation_id` is trace metadata, not identity, authorization, or signed event content. Identity claims, server fields, outcomes, risk decisions, findings, and keys are not client-settable.
 - Every API JSON success response includes server-generated `request_id`; event responses also echo the validated `correlation_id`. `X-Request-ID` matches the JSON field. Every RFC 9457 error includes the `request_id` extension and matching header. Never include credentials, signature bytes, or key bytes in errors or logs. Plaintext may appear only in the explicit transient decrypt success response to an authorized service identity; never log or persist it.
 - Timestamps use RFC 3339 UTC; IDs are UUIDs. Event timestamps more than 5 minutes in the future or older than the configured 30-day ingestion window return `400 timestamp_out_of_window`; bounds are configuration and can be tightened, not silently widened per request.
@@ -166,12 +168,12 @@ Every 401 includes `WWW-Authenticate: Bearer` with an appropriate safe challenge
 
 Both the role and named OAuth scope are required, along with organization/object authorization. `roles` is an array claim and `scope` is a space-delimited string claim in the validated JWT. This matrix is the maximum role ceiling; IdP policy may grant less. Decrypt is never granted to a human role by default. `SERVICE` is a workload identity and receives `crypto:decrypt` only through explicit IdP policy for a specific workload.
 
-| Role | Ingest | Read events/findings/assessments | Read keys/inventory/CBOM/audit | Manage keys | Verify | Encrypt | Decrypt | Write CBOM | Generate CBOM | Finding status | Analyst review/override |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| `ADMIN` | No | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | No |
-| `SECURITY_ANALYST` | No | Yes | Yes | No | No | No | No | Yes | Yes | Yes | Yes |
-| `AUDITOR` | No | Yes | Yes | No | No | No | No | No | No | No | No |
-| `SERVICE` | Yes | No | No | No | Yes | Yes | Explicit IdP grant only | No | No | No | No |
+| Role | Ingest | Read events/findings/assessments | Read keys/inventory/CBOM/audit | Manage keys | Verify | Encrypt | Decrypt | Write CBOM | Generate CBOM | Finding status | Analyst review/override | Whoami |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ADMIN` | No | Yes | Yes | Yes | No | No | No | Yes | Yes | Yes | No | Yes |
+| `SECURITY_ANALYST` | No | Yes | Yes | No | No | No | No | Yes | Yes | Yes | Yes | Yes |
+| `AUDITOR` | No | Yes | Yes | No | No | No | No | No | No | No | No | Yes |
+| `SERVICE` | Yes | No | No | No | Yes | Yes | Explicit IdP grant only | No | No | No | No | Yes |
 
 Role/tenant creation and assignment are administered in the IdP/provisioning plane; Qubrix exposes no endpoint that manages those grants.
 
@@ -181,6 +183,7 @@ Every endpoint below requires its listed role(s) and scope. All resource lookups
 
 | Method and path | Purpose | Required role | Required scope |
 |---|---|---|---|
+| `GET /api/v1/whoami` | Return the validated caller principal | `ADMIN`, `SECURITY_ANALYST`, `AUDITOR`, `SERVICE` | `whoami:read` |
 | `POST /api/v1/events` | Ingest event, verify if signed, score, persist findings | `SERVICE` | `events:write` |
 | `GET /api/v1/events` | List events | `ADMIN`, `SECURITY_ANALYST`, `AUDITOR` | `events:read` |
 | `GET /api/v1/events/{event_id}` | Read event and recorded outcome | `ADMIN`, `SECURITY_ANALYST`, `AUDITOR` | `events:read` |
@@ -205,6 +208,8 @@ Every endpoint below requires its listed role(s) and scope. All resource lookups
 | `GET /api/v1/audit-records` | Read redacted tenant audit history | `ADMIN`, `AUDITOR` | `audit:read` |
 
 All JSON bodies above include `schema_version: 1` and `correlation_id`; schemas are bounded and `extra=forbid`. `POST /events` and `/crypto/verify` use the event idempotency/replay behavior described above. Crypto verify accepts only a `SIGNED_MESSAGE_RECEIVED` common event envelope and requires a nonce; it persists the event, verification, risk assessment, and any required finding. Verifier-level malformed signature encoding produces `MALFORMED_INPUT` and its own finding, while schema-invalid requests rejected before verification receive 400. Verification provider outage is persisted as `VERIFIER_UNAVAILABLE` and a finding when PostgreSQL is available. `POST /crypto/encrypt` accepts `{ "schema_version": 1, "correlation_id": "uuid", "key_id": "...", "plaintext_b64": "..." }`; it returns `ciphertext_b64`, provider algorithm, key reference, nonce, and authentication tag. `POST /crypto/decrypt` accepts the same metadata plus ciphertext/nonce/tag and returns transient `plaintext_b64`; it is never persisted/logged, PAN is forbidden, and only explicitly authorized service identities may call it. Both crypto endpoint provider failures return explicit errors and never produce a success-shaped fallback.
+
+`GET /api/v1/whoami` has no request body or identity-bearing parameters. Its response is `{ "request_id": "uuid", "subject": "validated-sub", "organization_id": "uuid", "roles": ["SERVICE"], "scopes": ["whoami:read"] }`; the identity values are taken only from the validated bearer token.
 
 Finding PATCH accepts `{ "schema_version": 1, "correlation_id": "uuid", "status": "ACKNOWLEDGED|RESOLVED", "reason": "bounded non-sensitive text" }`. Assessment review accepts `{ "schema_version": 1, "correlation_id": "uuid", "review_status": "CONFIRMED|DISPUTED", "decision_override": "APPROVE|VERIFY|FLAG|null", "reason_code": "...", "rationale": "bounded non-sensitive text" }`. Original score and decision remain immutable; review is append-only, actor-attributed, and cannot lower replay/verification hard floors.
 
