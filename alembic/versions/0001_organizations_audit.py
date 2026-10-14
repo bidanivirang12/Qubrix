@@ -66,17 +66,20 @@ def upgrade() -> None:
         "audit_records",
         ["organization_id", "actor_subject", "occurred_at"],
     )
-    op.execute("GRANT SELECT, INSERT ON TABLE organizations TO qubrix_runtime")
+    # Organizations are soft-deleted; DELETE would break retained audit references.
+    op.execute("REVOKE ALL PRIVILEGES ON TABLE organizations FROM PUBLIC, qubrix_runtime")
+    op.execute("GRANT SELECT, INSERT, UPDATE ON TABLE organizations TO qubrix_runtime")
+    op.execute("REVOKE ALL PRIVILEGES ON TABLE audit_records FROM PUBLIC, qubrix_runtime")
     op.execute("GRANT SELECT, INSERT ON TABLE audit_records TO qubrix_runtime")
-    op.execute(
-        "REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER "
-        "ON TABLE audit_records FROM qubrix_runtime"
-    )
+    op.execute("REVOKE ALL PRIVILEGES ON TABLE alembic_version FROM PUBLIC, qubrix_runtime")
 
 
 def downgrade() -> None:
+    op.execute("REVOKE ALL PRIVILEGES ON TABLE alembic_version FROM PUBLIC, qubrix_runtime")
     op.execute("REVOKE ALL PRIVILEGES ON TABLE audit_records FROM qubrix_runtime")
+    op.execute("REVOKE ALL PRIVILEGES ON TABLE audit_records FROM PUBLIC")
     op.execute("REVOKE ALL PRIVILEGES ON TABLE organizations FROM qubrix_runtime")
+    op.execute("REVOKE ALL PRIVILEGES ON TABLE organizations FROM PUBLIC")
     op.drop_index("ix_audit_records_organization_actor_occurred", table_name="audit_records")
     op.drop_index("ix_audit_records_organization_occurred_id", table_name="audit_records")
     op.drop_table("audit_records")

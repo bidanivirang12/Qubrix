@@ -19,8 +19,21 @@ psql -W -h localhost -U postgres -d postgres `
 The script silently prompts for a password if either Qubrix role does not exist.
 It does not request or rotate a password for an existing role. It creates
 databases only when absent and refuses a test database name that does not end in
-`_test`. It does not drop or reset databases. Re-run it after a successful run
-to reconcile role attributes and runtime grants.
+`_test`. It does not drop or reset databases. Re-running it reapplies role
+attributes, database ownership, database PUBLIC revocation, CONNECT grants, and
+runtime schema USAGE only.
+It never grants table or sequence privileges or configures default privileges.
+Alembic migrations grant runtime privileges individually on each table they
+create; each future table must be added to the explicit privilege allowlist
+integration test as well.
+
+The current database privilege allowlist is: `organizations` gets `SELECT`,
+`INSERT`, and `UPDATE` so the service can read, provision, and change lifecycle
+state; `DELETE` is excluded because tenant removal is a soft-delete and audit
+records must retain their organization reference. `audit_records` gets only
+`SELECT` and `INSERT`. `alembic_version` gets no runtime privileges. The
+foundation migration creates no sequences; future migrations must grant only
+the necessary sequence privileges explicitly and add those objects to tests.
 
 The canonical database URL environment variables are `DATABASE_URL` and
 `TEST_DATABASE_URL` for the `qubrix_app` owner, and `RUNTIME_DATABASE_URL` and

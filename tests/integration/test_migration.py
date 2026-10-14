@@ -12,6 +12,110 @@ from app.db.safety import psycopg_async_url, require_test_database
 
 
 @pytest.mark.asyncio
+async def test_runtime_table_privileges_match_explicit_allowlist() -> None:
+    database_url = os.environ["TEST_DATABASE_URL"]
+    require_test_database(database_url)
+    engine = create_async_engine(psycopg_async_url(database_url), pool_pre_ping=True)
+    expected_table_privileges: dict[str, set[str]] = {
+        "alembic_version": set(),
+        "audit_records": {"SELECT", "INSERT"},
+        "organizations": {"SELECT", "INSERT", "UPDATE"},
+    }
+    privileges: tuple[str, ...] = (
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TRUNCATE",
+        "REFERENCES",
+        "TRIGGER",
+    )
+    try:
+        async with engine.connect() as connection:
+            table_rows = await connection.execute(
+                text(
+                    "SELECT tablename FROM pg_catalog.pg_tables "
+                    "WHERE schemaname = 'public' ORDER BY tablename"
+                )
+            )
+            table_names: set[str] = {str(row[0]) for row in table_rows}
+            actual_table_privileges: dict[str, set[str]] = {
+                table_name: set() for table_name in table_names
+            }
+            for table_name in table_names:
+                for privilege in privileges:
+                    has_privilege = await connection.scalar(
+                        text(
+                            "SELECT has_table_privilege("
+                            "'qubrix_runtime', "
+                            "format('%I.%I', 'public', CAST(:table_name AS text)), "
+                            "CAST(:privilege AS text))"
+                        ),
+                        {"table_name": table_name, "privilege": privilege},
+                    )
+                    if has_privilege:
+                        actual_table_privileges[table_name].add(privilege)
+
+            assert actual_table_privileges == expected_table_privileges
+
+            inherited_table_privileges = await connection.scalar(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM pg_catalog.pg_default_acl AS defaults "
+                    "JOIN pg_catalog.pg_roles AS owner "
+                    "ON owner.oid = defaults.defaclrole "
+                    "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) AS acl "
+                    "JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee "
+                    "WHERE owner.rolname = 'qubrix_app' "
+                    "AND defaults.defaclnamespace = 'public'::regnamespace "
+                    "AND defaults.defaclobjtype = 'r' "
+                    "AND grantee.rolname = 'qubrix_runtime')"
+                )
+            )
+            assert not inherited_table_privileges
+
+            sequence_rows = await connection.execute(
+                text(
+                    "SELECT sequencename FROM pg_catalog.pg_sequences "
+                    "WHERE schemaname = 'public' ORDER BY sequencename"
+                )
+            )
+            for (sequence_name_value,) in sequence_rows:
+                sequence_name = str(sequence_name_value)
+                for privilege in ("USAGE", "SELECT", "UPDATE"):
+                    has_privilege = await connection.scalar(
+                        text(
+                            "SELECT has_sequence_privilege("
+                            "'qubrix_runtime', "
+                            "format('%I.%I', 'public', CAST(:sequence_name AS text)), "
+                            "CAST(:privilege AS text))"
+                        ),
+                        {"sequence_name": sequence_name, "privilege": privilege},
+                    )
+                    assert not has_privilege, (
+                        f"unexpected {privilege} privilege on public sequence {sequence_name}"
+                    )
+
+            inherited_sequence_privileges = await connection.scalar(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM pg_catalog.pg_default_acl AS defaults "
+                    "JOIN pg_catalog.pg_roles AS owner "
+                    "ON owner.oid = defaults.defaclrole "
+                    "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) AS acl "
+                    "JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = acl.grantee "
+                    "WHERE owner.rolname = 'qubrix_app' "
+                    "AND defaults.defaclnamespace = 'public'::regnamespace "
+                    "AND defaults.defaclobjtype = 'S' "
+                    "AND grantee.rolname = 'qubrix_runtime')"
+                )
+            )
+            assert not inherited_sequence_privileges
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_migrated_empty_database_has_foundation_tables() -> None:
     database_url = os.environ["TEST_DATABASE_URL"]
     require_test_database(database_url)
@@ -31,7 +135,7 @@ async def test_migrated_empty_database_has_foundation_tables() -> None:
                 "alembic_version",
             }
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0001_organizations_audit"
+            assert revision == "0002_runtime_table_privileges"
     finally:
         await engine.dispose()
 
