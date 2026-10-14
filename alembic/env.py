@@ -62,10 +62,14 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
         connect_args={"options": "-c statement_timeout=10000"},
     )
-    async with connectable.connect() as connection:
-        await connection.run_sync(verify_current_database, expected_database)
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(verify_current_database, expected_database)
+
+        async with connectable.begin() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 def run_migrations_online() -> None:

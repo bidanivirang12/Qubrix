@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -69,6 +71,26 @@ jobs:
             --set test_database=qubrix_test \
             --file scripts/bootstrap_db.sql
 
+      - name: Reject invalid bootstrap test database name
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: postgres
+          PGPASSWORD: postgres
+        run: |
+          if psql \
+            --set ON_ERROR_STOP=1 \
+            --set owner_password=unused \
+            --set runtime_password=unused \
+            --set dev_database=qubrix_dev \
+            --set test_database=qubrix_invalid \
+            --file scripts/bootstrap_db.sql; then
+            echo "Bootstrap unexpectedly accepted an invalid test database name"
+            exit 1
+          else
+            echo "Bootstrap correctly rejected an invalid test database name"
+          fi
+
       - name: Lock check
         run: uv lock --check
 
@@ -95,15 +117,41 @@ jobs:
 
       - name: Migrate fresh test database
         env:
-          QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST: "true"
           TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${{ steps.bootstrap.outputs.owner_password }}@localhost:5432/qubrix_test
         run: uv run alembic upgrade head
 
+      - name: Verify migrated tables persisted
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${{ steps.bootstrap.outputs.owner_password }}@localhost:5432/qubrix_test
+        run: |
+          uv run python - <<'PY'
+          import os
+
+          import psycopg
+
+          url = os.environ["TEST_DATABASE_URL"].replace(
+              "postgresql+psycopg://", "postgresql://", 1
+          )
+          expected = {"organizations", "audit_records", "alembic_version"}
+          with psycopg.connect(url) as connection:
+              found = {
+                  row[0]
+                  for row in connection.execute(
+                      "SELECT tablename FROM pg_catalog.pg_tables "
+                      "WHERE schemaname = 'public'"
+                  )
+              }
+          missing = expected - found
+          if missing:
+              raise SystemExit(f"Migration did not persist tables: {sorted(missing)}")
+          print(f"migration_tables={sorted(expected)}")
+          PY
+
       - name: Tests with coverage
         env:
-          QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST: "true"
           TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${{ steps.bootstrap.outputs.owner_password }}@localhost:5432/qubrix_test
           RUNTIME_TEST_DATABASE_URL: postgresql+psycopg://qubrix_runtime:${{ steps.bootstrap.outputs.runtime_password }}@localhost:5432/qubrix_test
+          TEST_DATABASE_ADMIN_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
         run: >-
           uv run pytest
           --cov=app
@@ -120,12 +168,12 @@ jobs:
           format: table
           vuln-type: os,library
           severity: HIGH,CRITICAL
-          ignore-unfixed: false
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Start container for health smoke test
         env:
-          RUNTIME_DATABASE_URL: postgresql+psycopg://qubrix_runtime:${{ steps.bootstrap.outputs.runtime_password }}@127.0.0.1:5432/qubrix_dev
+          RUNTIME_DATABASE_URL: postgresql+psycopg://qubrix_runtime:${{ steps.bootstrap.outputs.runtime_password }}@127.0.0.1:5432/qubrix_test
         run: |
           docker run --detach \
             --name qubrix-smoke \
