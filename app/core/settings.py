@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     oidc_audience: str | None = None
     jwks_url: str | None = None
     jwks_cache_lifetime_seconds: int = PydanticField(default=300, ge=30, le=86_400)
+    jwks_stale_key_grace_seconds: int = PydanticField(default=300, ge=0, le=3_600)
+    max_token_lifetime_seconds: int = PydanticField(default=3_600, ge=60, le=86_400)
     clock_skew_leeway_seconds: int = PydanticField(default=60, ge=0, le=300)
     allowed_algorithms: list[str] = PydanticField(default_factory=lambda: ["RS256", "ES256"])
     key_provider: Literal["software", "kms"] = "software"
@@ -117,16 +119,19 @@ class Settings(BaseSettings):
         if (
             len(value) > 2_048
             or value != value.strip()
-            or parsed.scheme != "https"
             or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
             or parsed.fragment
-        ):
-            raise ValueError(
-                "jwks_url must be an HTTPS URL without credentials, query, or fragment"
+            or not (
+                parsed.scheme == "https"
+                or (
+                    parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+                )
             )
+        ):
+            raise ValueError("jwks_url must be HTTPS, except for an HTTP localhost test URL")
         return value
 
     @model_validator(mode="after")
@@ -165,6 +170,8 @@ class Settings(BaseSettings):
             problems.append("oidc_audience is required")
         if self.jwks_url is None:
             problems.append("jwks_url is required")
+        elif not self._is_https_url(self.jwks_url, allow_path=True):
+            problems.append("jwks_url must be HTTPS in production")
         if self.key_provider != "kms":
             problems.append("the software key provider is forbidden")
         if not self.cors_origins:

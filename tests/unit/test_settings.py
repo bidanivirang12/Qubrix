@@ -34,6 +34,8 @@ def isolate_settings_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         "QUBRIX_OIDC_AUDIENCE",
         "QUBRIX_JWKS_URL",
         "QUBRIX_JWKS_CACHE_LIFETIME_SECONDS",
+        "QUBRIX_JWKS_STALE_KEY_GRACE_SECONDS",
+        "QUBRIX_MAX_TOKEN_LIFETIME_SECONDS",
         "QUBRIX_CLOCK_SKEW_LEEWAY_SECONDS",
         "QUBRIX_ALLOWED_ALGORITHMS",
         "QUBRIX_KEY_PROVIDER",
@@ -115,6 +117,8 @@ def test_valid_production_configuration_is_accepted() -> None:
 def test_phase_three_setting_defaults_match_proposed_adr_defaults() -> None:
     settings = Settings()
     assert settings.jwks_cache_lifetime_seconds == 300
+    assert settings.jwks_stale_key_grace_seconds == 300
+    assert settings.max_token_lifetime_seconds == 3_600
     assert settings.clock_skew_leeway_seconds == 60
     assert settings.allowed_algorithms == ["RS256", "ES256"]
     assert settings.request_body_max_bytes == 1_048_576
@@ -201,6 +205,21 @@ def test_invalid_production_oidc_issuer_is_rejected(issuer: str) -> None:
         Settings.model_validate(production_settings(oidc_issuer=issuer))
 
 
+def test_production_rejects_local_http_jwks_url() -> None:
+    with pytest.raises(ValidationError, match="jwks_url must be HTTPS in production"):
+        Settings.model_validate(production_settings(jwks_url="http://localhost:8765/keys"))
+
+
+def test_test_environment_accepts_local_http_jwks_url() -> None:
+    settings = Settings.model_validate(
+        {
+            "environment": "test",
+            "jwks_url": "http://localhost:8765/keys",
+        }
+    )
+    assert settings.jwks_url == "http://localhost:8765/keys"
+
+
 @pytest.mark.parametrize(
     "origins",
     [
@@ -224,6 +243,10 @@ def test_invalid_production_cors_origins_are_rejected(origins: list[str]) -> Non
     [
         ("jwks_cache_lifetime_seconds", 29),
         ("jwks_cache_lifetime_seconds", 86_401),
+        ("jwks_stale_key_grace_seconds", -1),
+        ("jwks_stale_key_grace_seconds", 3_601),
+        ("max_token_lifetime_seconds", 59),
+        ("max_token_lifetime_seconds", 86_401),
         ("clock_skew_leeway_seconds", -1),
         ("clock_skew_leeway_seconds", 301),
         ("request_body_max_bytes", 1_023),
