@@ -47,14 +47,17 @@ class TokenValidator:
         settings: Settings,
         client: httpx.AsyncClient,
         *,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
         self._client = client
         self._clock = clock
+        self._monotonic_clock = monotonic_clock
         self._keys: dict[str, dict[str, Any]] = {}
         self._expires_at = 0.0
         self._last_refresh_at = float("-inf")
+        self._last_refresh_failure_at: float | None = None
         self._refresh_lock = asyncio.Lock()
 
     async def validate(self, token: str) -> Principal:
@@ -99,9 +102,13 @@ class TokenValidator:
                 key=public_key,
                 algorithms=[algorithm],
                 issuer=self._settings.oidc_issuer,
-                audience=self._settings.oidc_audience,
-                leeway=self._settings.clock_skew_leeway_seconds,
-                options={"require": list(REQUIRED_CLAIMS)},
+                options={
+                    "require": list(REQUIRED_CLAIMS),
+                    "verify_aud": False,
+                    "verify_exp": False,
+                    "verify_iat": False,
+                    "verify_nbf": False,
+                },
             )
             return self._principal_from_claims(claims)
         except JwksUnavailable:
@@ -125,32 +132,48 @@ class TokenValidator:
             raise InvalidToken(reason) from error
 
     async def _get_jwk(self, key_id: str) -> dict[str, Any]:
-        now = self._clock()
+        now = self._monotonic_clock()
         fresh = now < self._expires_at
         if fresh and key_id in self._keys:
             return self._keys[key_id]
 
         async with self._refresh_lock:
-            now = self._clock()
+            now = self._monotonic_clock()
             fresh = now < self._expires_at
             if fresh and key_id in self._keys:
                 return self._keys[key_id]
             if now - self._last_refresh_at < MIN_REFRESH_INTERVAL_SECONDS:
                 if fresh:
                     raise UnknownSigningKey
+                if self._has_usable_stale_key(key_id, now):
+                    return self._keys[key_id]
                 raise JwksUnavailable("JWKS cache expired and refresh is rate-limited")
 
             self._last_refresh_at = now
             try:
                 keys = await self._fetch_jwks()
-            except (httpx.HTTPError, json.JSONDecodeError, UnicodeError, ValueError) as error:
+            except (
+                JwksUnavailable,
+                httpx.HTTPError,
+                json.JSONDecodeError,
+                UnicodeError,
+                ValueError,
+            ) as error:
+                self._last_refresh_failure_at = now
+                if self._has_usable_stale_key(key_id, now):
+                    return self._keys[key_id]
                 raise JwksUnavailable("configured JWKS endpoint could not be refreshed") from error
 
             self._keys = keys
             self._expires_at = now + self._settings.jwks_cache_lifetime_seconds
+            self._last_refresh_failure_at = None
             if key_id not in self._keys:
                 raise UnknownSigningKey
             return self._keys[key_id]
+
+    def _has_usable_stale_key(self, key_id: str, now: float) -> bool:
+        stale_until = self._expires_at + self._settings.jwks_stale_key_grace_seconds
+        return key_id in self._keys and now < stale_until
 
     async def _fetch_jwks(self) -> dict[str, dict[str, Any]]:
         url = self._settings.jwks_url
@@ -195,8 +218,17 @@ class TokenValidator:
             raise InvalidToken("claim_set_too_large")
         if claims.get("iss") != self._settings.oidc_issuer:
             raise InvalidToken("issuer_mismatch")
-        if claims.get("aud") != self._settings.oidc_audience:
-            raise InvalidToken("audience_mismatch")
+        audience = claims.get("aud")
+        if isinstance(audience, str):
+            if audience != self._settings.oidc_audience:
+                raise InvalidToken("audience_mismatch")
+        elif isinstance(audience, list):
+            if any(not isinstance(item, str) for item in audience):
+                raise InvalidToken("invalid_audience_claim")
+            if self._settings.oidc_audience not in audience:
+                raise InvalidToken("audience_mismatch")
+        else:
+            raise InvalidToken("invalid_audience_claim")
 
         subject = claims.get("sub")
         organization_value = claims.get("organization_id")
@@ -228,13 +260,18 @@ class TokenValidator:
         issued_at = float(claims["iat"])
         expires_at = float(claims["exp"])
         not_before = float(claims["nbf"])
-        now = time.time()
-        if (
-            issued_at > now + self._settings.clock_skew_leeway_seconds
-            or expires_at <= issued_at
-            or not_before >= expires_at
-        ):
+        now = self._clock()
+        leeway = self._settings.clock_skew_leeway_seconds
+        if expires_at <= issued_at or not_before >= expires_at:
             raise InvalidToken("invalid_temporal_claim_relationship")
+        if issued_at > now + leeway:
+            raise InvalidToken("issued_at_in_future")
+        if expires_at <= now - leeway:
+            raise InvalidToken("token_expired")
+        if not_before > now + leeway:
+            raise InvalidToken("token_not_yet_valid")
+        if expires_at - issued_at > self._settings.max_token_lifetime_seconds:
+            raise InvalidToken("token_lifetime_exceeded")
         try:
             organization_id = UUID(organization_value)
         except ValueError as error:

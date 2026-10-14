@@ -71,6 +71,7 @@ class TestIdentityProvider:
         self.response_headers: dict[str, str] = {}
         self.response_body: bytes | None = None
         self.monotonic_time = 100.0
+        self.wall_time = time.time()
         self.transport = httpx.MockTransport(self._respond)
 
     @staticmethod
@@ -120,7 +121,7 @@ class TestIdentityProvider:
         signing_key: Any | None = None,
         remove_claims: set[str] | None = None,
     ) -> str:
-        now = int(time.time())
+        now = int(self.wall_time)
         payload: dict[str, Any] = {
             "iss": "https://issuer.example.test/tenant",
             "aud": "qubrix-api",
@@ -162,5 +163,6 @@ async def token_validator(
         yield TokenValidator(
             identity_provider.settings(),
             client,
-            clock=lambda: identity_provider.monotonic_time,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
         )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import httpx
@@ -30,10 +29,9 @@ async def test_configured_asymmetric_algorithms_validate(
 @pytest.mark.parametrize(
     ("claims", "reason"),
     [
-        ({"exp": int(time.time()) - 30}, "ExpiredSignatureError"),
-        ({"nbf": int(time.time()) + 300}, "ImmatureSignatureError"),
+        ({"iat": 9_900, "nbf": 9_900, "exp": 9_970}, "token_expired"),
+        ({"iat": 9_999, "nbf": 10_300, "exp": 10_500}, "token_not_yet_valid"),
         ({"iss": "https://wrong.example.test"}, "InvalidIssuerError"),
-        ({"aud": "wrong-api"}, "InvalidAudienceError"),
     ],
 )
 async def test_temporal_issuer_and_audience_claims_are_validated(
@@ -42,6 +40,64 @@ async def test_temporal_issuer_and_audience_claims_are_validated(
     claims: dict[str, Any],
     reason: str,
 ) -> None:
+    identity_provider.wall_time = 10_000.0
+    with pytest.raises(InvalidToken, match=reason):
+        await token_validator.validate(identity_provider.token(claims=claims))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("audience", "reason"),
+    [
+        ("qubrix-api", None),
+        (["other-api", "qubrix-api"], None),
+        (["other-api"], "audience_mismatch"),
+        (["qubrix-api", 42], "invalid_audience_claim"),
+    ],
+)
+async def test_audience_claim_accepts_string_or_matching_string_list(
+    identity_provider: Any,
+    token_validator: TokenValidator,
+    audience: Any,
+    reason: str | None,
+) -> None:
+    token = identity_provider.token(claims={"aud": audience})
+    if reason:
+        with pytest.raises(InvalidToken, match=reason):
+            await token_validator.validate(token)
+    else:
+        assert (await token_validator.validate(token)).subject == "tenant-user-17"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claims", "reason"),
+    [
+        (
+            {"iat": 10_003, "nbf": 10_000, "exp": 10_100},
+            "issued_at_in_future",
+        ),
+        (
+            {"iat": 9_990, "nbf": 9_970, "exp": 9_980},
+            "invalid_temporal_claim_relationship",
+        ),
+        (
+            {"iat": 9_990, "nbf": 10_050, "exp": 10_040},
+            "invalid_temporal_claim_relationship",
+        ),
+        (
+            {"iat": 9_990, "nbf": 10_000, "exp": 13_591},
+            "token_lifetime_exceeded",
+        ),
+    ],
+)
+async def test_temporal_relationships_and_maximum_lifetime_are_deterministic(
+    identity_provider: Any,
+    token_validator: TokenValidator,
+    claims: dict[str, Any],
+    reason: str,
+) -> None:
+    identity_provider.wall_time = 10_000.0
     with pytest.raises(InvalidToken, match=reason):
         await token_validator.validate(identity_provider.token(claims=claims))
 
@@ -91,7 +147,8 @@ async def test_algorithm_not_in_configured_allowlist_is_rejected(
         validator = TokenValidator(
             identity_provider.settings(allowed_algorithms=["RS256"]),
             client,
-            clock=lambda: identity_provider.monotonic_time,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
         )
         with pytest.raises(InvalidToken, match="disallowed_algorithm"):
             await validator.validate(identity_provider.token(algorithm="ES256", key_id="ec-1"))
@@ -112,9 +169,9 @@ async def test_tampered_payload_fails_signature_verification(
                 "organization_id": "6a79d6d8-23d3-4c14-bca7-6621be7d1701",
                 "roles": ["ADMIN"],
                 "scope": "whoami:read",
-                "iat": int(time.time()) - 1,
-                "nbf": int(time.time()) - 1,
-                "exp": int(time.time()) + 300,
+                "iat": int(identity_provider.wall_time) - 1,
+                "nbf": int(identity_provider.wall_time) - 1,
+                "exp": int(identity_provider.wall_time) + 300,
             },
             separators=(",", ":"),
         ).encode()
@@ -153,6 +210,32 @@ async def test_unknown_kid_can_succeed_after_bounded_refresh(
 
 
 @pytest.mark.asyncio
+async def test_random_unknown_kid_flood_does_not_prevent_legitimate_rotation(
+    identity_provider: Any,
+    token_validator: TokenValidator,
+) -> None:
+    await token_validator.validate(identity_provider.token())
+    identity_provider.monotonic_time += 5.0
+
+    for index in range(20):
+        with pytest.raises(InvalidToken, match="unknown_signing_key"):
+            await token_validator.validate(identity_provider.token(key_id=f"random-{index}"))
+    assert len(identity_provider.requests) == 2
+
+    rotated_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    identity_provider.keys.append(
+        identity_provider._public_jwk(rotated_private_key.public_key(), "rotated", "RS256")
+    )
+    identity_provider.monotonic_time += 5.0
+    rotated_token = identity_provider.token(
+        key_id="rotated",
+        signing_key=rotated_private_key,
+    )
+    assert (await token_validator.validate(rotated_token)).subject == "tenant-user-17"
+    assert len(identity_provider.requests) == 3
+
+
+@pytest.mark.asyncio
 async def test_unknown_kid_refresh_is_limited_by_minimum_interval(
     identity_provider: Any, token_validator: TokenValidator
 ) -> None:
@@ -179,7 +262,8 @@ async def test_unreachable_jwks_without_cache_fails_closed(
         validator = TokenValidator(
             identity_provider.settings(),
             client,
-            clock=lambda: identity_provider.monotonic_time,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
         )
         with pytest.raises(JwksUnavailable):
             await validator.validate(identity_provider.token())
@@ -193,7 +277,8 @@ async def test_jwks_redirect_is_not_followed(identity_provider: Any) -> None:
         validator = TokenValidator(
             identity_provider.settings(),
             client,
-            clock=lambda: identity_provider.monotonic_time,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
         )
         with pytest.raises(JwksUnavailable):
             await validator.validate(identity_provider.token())
@@ -209,7 +294,8 @@ async def test_oversized_jwks_response_is_rejected(identity_provider: Any) -> No
         validator = TokenValidator(
             identity_provider.settings(),
             client,
-            clock=lambda: identity_provider.monotonic_time,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
         )
         with pytest.raises(JwksUnavailable):
             await validator.validate(identity_provider.token())
@@ -228,15 +314,91 @@ async def test_fresh_cached_key_is_used_when_jwks_becomes_unreachable(
 
 
 @pytest.mark.asyncio
-async def test_expired_cache_and_unreachable_jwks_fail_closed(
-    identity_provider: Any, token_validator: TokenValidator
+async def test_cached_key_is_used_inside_stale_grace_after_refresh_failure(
+    identity_provider: Any,
+) -> None:
+    token = identity_provider.token()
+    async with httpx.AsyncClient(transport=identity_provider.transport) as client:
+        validator = TokenValidator(
+            identity_provider.settings(
+                jwks_cache_lifetime_seconds=30,
+                jwks_stale_key_grace_seconds=10,
+            ),
+            client,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
+        )
+        await validator.validate(token)
+        identity_provider.monotonic_time += 35.0
+        identity_provider.status_code = 503
+        assert (await validator.validate(token)).subject == "tenant-user-17"
+        assert len(identity_provider.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_expired_cache_outside_stale_grace_fails_closed(
+    identity_provider: Any,
+) -> None:
+    token = identity_provider.token()
+    async with httpx.AsyncClient(transport=identity_provider.transport) as client:
+        validator = TokenValidator(
+            identity_provider.settings(
+                jwks_cache_lifetime_seconds=30,
+                jwks_stale_key_grace_seconds=10,
+            ),
+            client,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
+        )
+        await validator.validate(token)
+        identity_provider.monotonic_time += 41.0
+        identity_provider.status_code = 503
+        with pytest.raises(JwksUnavailable):
+            await validator.validate(token)
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_can_retry_at_minimum_interval(
+    identity_provider: Any,
+) -> None:
+    token = identity_provider.token()
+    async with httpx.AsyncClient(transport=identity_provider.transport) as client:
+        validator = TokenValidator(
+            identity_provider.settings(
+                jwks_cache_lifetime_seconds=30,
+                jwks_stale_key_grace_seconds=20,
+            ),
+            client,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
+        )
+        await validator.validate(token)
+        identity_provider.monotonic_time += 31.0
+        identity_provider.status_code = 503
+        await validator.validate(token)
+        assert len(identity_provider.requests) == 2
+
+        identity_provider.monotonic_time += 4.0
+        await validator.validate(token)
+        assert len(identity_provider.requests) == 2
+
+        identity_provider.monotonic_time += 1.0
+        with pytest.raises(JwksUnavailable):
+            await validator.validate(token)
+        assert len(identity_provider.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_unknown_kid_outside_grace_is_unavailable_when_refresh_fails(
+    identity_provider: Any,
+    token_validator: TokenValidator,
 ) -> None:
     token = identity_provider.token()
     await token_validator.validate(token)
-    identity_provider.monotonic_time += 31.0
+    identity_provider.monotonic_time += 331.0
     identity_provider.status_code = 503
     with pytest.raises(JwksUnavailable):
-        await token_validator.validate(token)
+        await token_validator.validate(identity_provider.token(key_id="rotated"))
 
 
 @pytest.mark.asyncio

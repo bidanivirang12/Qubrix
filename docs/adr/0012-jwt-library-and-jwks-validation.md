@@ -22,12 +22,24 @@ It passes an explicit configured algorithm list to PyJWT and rejects token
 algorithms outside it before key lookup. It does not use token `jku`, `x5u`, or
 embedded `jwk` members. JWKS redirects are disabled; response bytes and key
 count are bounded; refreshes for unknown key IDs are rate-limited. Cache
-lifetime and JWT clock leeway use the existing bounded settings.
+lifetime, stale-key grace, clock leeway, and token lifetime use bounded settings.
+The JWKS cache defaults to a 300-second lifetime followed by a 300-second
+stale-key grace period. During grace, an already-cached matching key remains
+usable if refresh fails; after grace ends, validation fails closed with a
+dependency-unavailable response. Failed refreshes are recorded separately.
+The next refresh may start once the five-second minimum interval from the
+failed attempt has elapsed.
 
-The token contract requires exact configured issuer and audience strings,
-`exp`, `nbf`, and `iat`, and correctly typed `sub`, UUID `organization_id`,
-`roles`, and `scope`. Unknown roles are rejected instead of ignored: a typo or
-unrecognized IdP role must not be silently treated as a valid principal.
+The token contract requires the exact configured issuer and an audience claim
+equal to the configured audience string or a list of strings containing it.
+The required standard claims are `exp`, `nbf`, and `iat`, validated against an
+injected UTC clock and bounded leeway. Identity claims `sub`, UUID
+`organization_id`, `roles`, and `scope` must have their specified types.
+Unknown roles are rejected instead of ignored: a typo or unrecognized IdP role
+must not be silently treated as a valid principal. An IdP role rollout or typo
+can therefore cause authentication to fail until the role is corrected or
+explicitly supported by the application. Tokens whose `exp - iat` exceeds
+`QUBRIX_MAX_TOKEN_LIFETIME_SECONDS` (default 3,600 seconds) are rejected.
 Bearer tokens are limited to 16 KiB and claim sets to 32 claims. Authentication
 failures expose a generic RFC 9457 response; logs contain a safe internal
 failure reason but never the token or claim values.

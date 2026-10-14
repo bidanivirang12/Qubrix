@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     oidc_audience: str | None = None
     jwks_url: str | None = None
     jwks_cache_lifetime_seconds: int = PydanticField(default=300, ge=30, le=86_400)
+    jwks_stale_key_grace_seconds: int = PydanticField(default=300, ge=0, le=3_600)
+    max_token_lifetime_seconds: int = PydanticField(default=3_600, ge=60, le=86_400)
     clock_skew_leeway_seconds: int = PydanticField(default=60, ge=0, le=300)
     allowed_algorithms: list[str] = PydanticField(default_factory=lambda: ["RS256", "ES256"])
     key_provider: Literal["software", "kms"] = "software"
