@@ -13,6 +13,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from sqlalchemy import create_engine
 
 from app.core.jwt_auth import TokenValidator
@@ -77,10 +78,10 @@ class TestIdentityProvider:
     @staticmethod
     def _public_jwk(key: Any, key_id: str, algorithm: str) -> dict[str, Any]:
         if algorithm == "RS256":
-            encoded = jwt.algorithms.RSAAlgorithm.to_jwk(key)
+            encoded: str = RSAAlgorithm.to_jwk(key)
         else:
-            encoded = jwt.algorithms.ECAlgorithm.to_jwk(key)
-        jwk = json.loads(encoded)
+            encoded = ECAlgorithm.to_jwk(key)
+        jwk: dict[str, Any] = json.loads(encoded)
         jwk.update({"kid": key_id, "use": "sig", "alg": algorithm})
         return jwk
 

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
 import httpx
-import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.core.jwt_auth import InvalidToken, JwksUnavailable, TokenValidator
+
+
+def _base64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
 @pytest.mark.asyncio
@@ -160,7 +164,7 @@ async def test_tampered_payload_fails_signature_verification(
 ) -> None:
     token = identity_provider.token()
     header, payload, signature = token.split(".")
-    altered_payload = jwt.utils.base64url_encode(
+    altered_payload = _base64url_encode(
         json.dumps(
             {
                 "iss": identity_provider.settings().oidc_issuer,
@@ -175,7 +179,7 @@ async def test_tampered_payload_fails_signature_verification(
             },
             separators=(",", ":"),
         ).encode()
-    ).decode()
+    )
     assert payload != altered_payload
     with pytest.raises(InvalidToken, match="InvalidSignatureError"):
         await token_validator.validate(f"{header}.{altered_payload}.{signature}")

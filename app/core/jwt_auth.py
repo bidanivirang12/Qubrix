@@ -6,7 +6,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -189,26 +189,33 @@ class TokenValidator:
                 if len(content) > MAX_JWKS_BYTES:
                     raise JwksUnavailable("JWKS response exceeds the configured size bound")
 
-        document: Any = json.loads(content)
-        if not isinstance(document, dict) or not isinstance(document.get("keys"), list):
+        raw_document: object = json.loads(content)
+        if not isinstance(raw_document, dict):
             raise JwksUnavailable("JWKS document has an invalid shape")
-        if not document["keys"] or len(document["keys"]) > MAX_JWKS_KEYS:
+        document: dict[str, Any] = cast(dict[str, Any], raw_document)
+        raw_keys = document.get("keys")
+        if not isinstance(raw_keys, list):
+            raise JwksUnavailable("JWKS document has an invalid shape")
+        keys: list[object] = cast(list[object], raw_keys)
+        if not keys or len(keys) > MAX_JWKS_KEYS:
             raise JwksUnavailable("JWKS key count is outside the accepted bounds")
 
         result: dict[str, dict[str, Any]] = {}
-        for item in document["keys"]:
-            if not isinstance(item, dict):
+        for raw_item in keys:
+            if not isinstance(raw_item, dict):
                 raise JwksUnavailable("JWKS contains a non-object key")
-            key_id = item.get("kid")
-            key_type = item.get("kty")
-            if (
-                not isinstance(key_id, str)
-                or not key_id
-                or len(key_id) > MAX_KID_LENGTH
-                or key_id in result
-                or not isinstance(key_type, str)
-                or key_type not in {"RSA", "EC", "OKP"}
-            ):
+            item: dict[str, Any] = cast(dict[str, Any], raw_item)
+            raw_key_id = item.get("kid")
+            raw_key_type = item.get("kty")
+            if not isinstance(raw_key_id, str):
+                raise JwksUnavailable("JWKS contains an invalid or duplicate signing key")
+            key_id: str = raw_key_id
+            if not key_id or len(key_id) > MAX_KID_LENGTH or key_id in result:
+                raise JwksUnavailable("JWKS contains an invalid or duplicate signing key")
+            if not isinstance(raw_key_type, str):
+                raise JwksUnavailable("JWKS contains an invalid or duplicate signing key")
+            key_type: str = raw_key_type
+            if key_type not in {"RSA", "EC", "OKP"}:
                 raise JwksUnavailable("JWKS contains an invalid or duplicate signing key")
             result[key_id] = item
         return result
@@ -223,9 +230,10 @@ class TokenValidator:
             if audience != self._settings.oidc_audience:
                 raise InvalidToken("audience_mismatch")
         elif isinstance(audience, list):
-            if any(not isinstance(item, str) for item in audience):
+            audience_claim: list[object] = cast(list[object], audience)
+            if any(not isinstance(item, str) for item in audience_claim):
                 raise InvalidToken("invalid_audience_claim")
-            if self._settings.oidc_audience not in audience:
+            if self._settings.oidc_audience not in audience_claim:
                 raise InvalidToken("audience_mismatch")
         else:
             raise InvalidToken("invalid_audience_claim")
@@ -238,10 +246,13 @@ class TokenValidator:
             raise InvalidToken("invalid_subject_claim")
         if not isinstance(organization_value, str):
             raise InvalidToken("invalid_organization_claim")
-        if not isinstance(roles_value, list) or len(roles_value) > len(KNOWN_ROLES):
+        if not isinstance(roles_value, list):
+            raise InvalidToken("invalid_roles_claim")
+        roles_claim: list[object] = cast(list[object], roles_value)
+        if len(roles_claim) > len(KNOWN_ROLES):
             raise InvalidToken("invalid_roles_claim")
         roles: set[str] = set()
-        for role in roles_value:
+        for role in roles_claim:
             if not isinstance(role, str):
                 raise InvalidToken("invalid_roles_claim")
             if role not in KNOWN_ROLES:
