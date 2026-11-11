@@ -486,6 +486,17 @@ async def test_organization_claim_must_be_uuid(
 
 
 @pytest.mark.asyncio
+async def test_subject_length_fits_audit_and_revocation_schema(
+    identity_provider: Any,
+    token_validator: TokenValidator,
+) -> None:
+    with pytest.raises(InvalidToken, match="invalid_subject_claim"):
+        await token_validator.validate(
+            identity_provider.token(claims={"sub": "s" * 256})
+        )
+
+
+@pytest.mark.asyncio
 async def test_unknown_role_is_rejected(
     identity_provider: Any, token_validator: TokenValidator
 ) -> None:

@@ -31,6 +31,9 @@ SAFE_EXTRA_FIELDS = (
     "operation",
     "error_category",
     "duration_ms",
+    "security_event",
+    "address_bucket",
+    "count",
 )
 
 

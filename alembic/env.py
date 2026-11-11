@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from app.core.settings import Settings
 from app.db.base import Base
+import app.db.models as _models
 from app.db.connection import psycopg_async_url
 from app.db.safety import require_test_database, verify_current_database
 

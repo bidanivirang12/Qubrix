@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     crypto_requests_per_minute: int = PydanticField(default=10, ge=1, le=1_000)
     human_reads_per_minute: int = PydanticField(default=120, ge=1, le=10_000)
     human_writes_per_minute: int = PydanticField(default=30, ge=1, le=1_000)
+    revocation_cache_seconds: int = PydanticField(default=30, ge=1, le=300)
+    rate_limit_window_seconds: int = PydanticField(default=60, ge=1, le=3_600)
+    rate_limit_retention_seconds: int = PydanticField(default=86_400, ge=60, le=2_592_000)
+    address_hash_salt: SecretStr | None = None
+    pre_auth_bucket_size: int = PydanticField(default=20, ge=1, le=1_000)
+    pre_auth_refill_per_second: float = PydanticField(default=1.0, gt=0, le=1_000)
+    pre_auth_max_tracked_clients: int = PydanticField(default=10_000, ge=1, le=100_000)
+    audit_denial_rows_per_subject_per_minute: int = PydanticField(default=5, ge=1, le=100)
     db_pool_size: int = PydanticField(default=5, ge=1, le=100)
     db_max_overflow: int = PydanticField(default=5, ge=0, le=100)
     db_statement_timeout_ms: int = PydanticField(default=5000, ge=100, le=120_000)
@@ -156,6 +164,8 @@ class Settings(BaseSettings):
             problems.extend(self._runtime_database_url_problems())
         if self.runtime_test_database_url is not None:
             problems.append("runtime_test_database_url is forbidden in production")
+        if self.address_hash_salt is None or len(self.address_hash_salt.get_secret_value()) < 32:
+            problems.append("address_hash_salt must be set to at least 32 characters")
         if self.allow_nonlocal_test_database_host:
             problems.append("allow_nonlocal_test_database_host is forbidden in production")
         if self.oidc_provider != "oidc":
@@ -181,6 +191,12 @@ class Settings(BaseSettings):
 
         if problems:
             raise ValueError("invalid production settings: " + "; ".join(problems))
+        return self
+
+    @model_validator(mode="after")
+    def rate_limit_retention_covers_window(self) -> Settings:
+        if self.rate_limit_retention_seconds < self.rate_limit_window_seconds:
+            raise ValueError("rate_limit_retention_seconds must cover at least one full window")
         return self
 
     @staticmethod

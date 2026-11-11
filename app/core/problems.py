@@ -8,8 +8,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.auth_dependencies import AuthenticationRequired, IdentityProviderUnavailable
+from app.core.auth_dependencies import (
+    AuthenticationRequired,
+    IdentityProviderUnavailable,
+    OrganizationNotProvisioned,
+)
 from app.core.authorization import AuthorizationDenied
+from app.core.post_auth_limiter import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +80,30 @@ def install_problem_handlers(app: FastAPI) -> None:
             title="Forbidden",
             detail="The authenticated identity is not authorized for this operation.",
         )
+
+    @app.exception_handler(OrganizationNotProvisioned)
+    async def organization_error(
+        request: Request, _exc: OrganizationNotProvisioned
+    ) -> JSONResponse:
+        return problem_response(
+            request,
+            status=403,
+            code="forbidden",
+            title="Forbidden",
+            detail="The authenticated identity is not authorized for this operation.",
+        )
+
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_error(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+        response = problem_response(
+            request,
+            status=429,
+            code="rate_limited",
+            title="Too Many Requests",
+            detail="The request limit has been exceeded.",
+        )
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _exc: RequestValidationError) -> JSONResponse:

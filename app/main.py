@@ -14,10 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.core.auth_dependencies import create_auth_http_client, get_current_principal
 from app.core.authorization import require
 from app.core.identity import Principal
+from app.core.identity_checks import IdentityChecks
 from app.core.jwt_auth import TokenValidator
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.core.pre_auth_limiter import PreAuthLimiter
 from app.core.problems import install_problem_handlers, problem_response
+from app.core.security_telemetry import SecurityTelemetry
 from app.core.settings import Settings, get_settings
 from app.db.session import check_database, create_database_engine
 
@@ -41,6 +44,18 @@ def create_app(
         application.state.token_validator = TokenValidator(
             active_settings, application.state.auth_http_client
         )
+        address_salt = (
+            active_settings.address_hash_salt.get_secret_value()
+            if active_settings.address_hash_salt is not None
+            else "development-only-address-bucket-salt"
+        )
+        application.state.security_telemetry = SecurityTelemetry(address_salt.encode("utf-8"))
+        application.state.pre_auth_limiter = PreAuthLimiter(
+            capacity=active_settings.pre_auth_bucket_size,
+            refill_per_second=active_settings.pre_auth_refill_per_second,
+            max_clients=active_settings.pre_auth_max_tracked_clients,
+        )
+        application.state.identity_checks = IdentityChecks(active_settings.revocation_cache_seconds)
         logger.info("Application started")
         try:
             yield

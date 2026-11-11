@@ -49,6 +49,14 @@ def isolate_settings_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         "QUBRIX_CRYPTO_REQUESTS_PER_MINUTE",
         "QUBRIX_HUMAN_READS_PER_MINUTE",
         "QUBRIX_HUMAN_WRITES_PER_MINUTE",
+        "QUBRIX_REVOCATION_CACHE_SECONDS",
+        "QUBRIX_RATE_LIMIT_WINDOW_SECONDS",
+        "QUBRIX_RATE_LIMIT_RETENTION_SECONDS",
+        "QUBRIX_ADDRESS_HASH_SALT",
+        "QUBRIX_PRE_AUTH_BUCKET_SIZE",
+        "QUBRIX_PRE_AUTH_REFILL_PER_SECOND",
+        "QUBRIX_PRE_AUTH_MAX_TRACKED_CLIENTS",
+        "QUBRIX_AUDIT_DENIAL_ROWS_PER_SUBJECT_PER_MINUTE",
         "QUBRIX_DB_POOL_SIZE",
         "QUBRIX_DB_MAX_OVERFLOW",
         "QUBRIX_DB_STATEMENT_TIMEOUT_MS",
@@ -72,6 +80,7 @@ def production_settings(**overrides: Any) -> dict[str, Any]:
         "oidc_issuer": "https://identity.example.invalid/tenant",
         "oidc_audience": "qubrix-api",
         "jwks_url": "https://identity.example.invalid/tenant/keys",
+        "address_hash_salt": SecretStr("a-long-production-only-address-salt-44"),
         "key_provider": "kms",
         "cors_origins": ["https://console.example.invalid"],
         "cors_allow_credentials": False,
@@ -101,6 +110,7 @@ def production_settings(**overrides: Any) -> dict[str, Any]:
         ({"oidc_issuer": None}, "oidc_issuer is required"),
         ({"oidc_audience": None}, "oidc_audience is required"),
         ({"jwks_url": None}, "jwks_url is required"),
+        ({"address_hash_salt": None}, "address_hash_salt must be set"),
         ({"cors_origins": []}, "cors_origins must contain"),
     ],
 )
@@ -128,6 +138,13 @@ def test_phase_three_setting_defaults_match_proposed_adr_defaults() -> None:
     assert settings.crypto_requests_per_minute == 10
     assert settings.human_reads_per_minute == 120
     assert settings.human_writes_per_minute == 30
+    assert settings.revocation_cache_seconds == 30
+    assert settings.rate_limit_window_seconds == 60
+    assert settings.rate_limit_retention_seconds == 86_400
+    assert settings.pre_auth_bucket_size == 20
+    assert settings.pre_auth_refill_per_second == 1
+    assert settings.pre_auth_max_tracked_clients == 10_000
+    assert settings.audit_denial_rows_per_subject_per_minute == 5
 
 
 @pytest.mark.parametrize(
@@ -259,6 +276,13 @@ def test_invalid_production_cors_origins_are_rejected(origins: list[str]) -> Non
         ("crypto_requests_per_minute", 1_001),
         ("human_reads_per_minute", 10_001),
         ("human_writes_per_minute", 1_001),
+        ("revocation_cache_seconds", 301),
+        ("revocation_cache_seconds", 0),
+        ("rate_limit_window_seconds", 3_601),
+        ("rate_limit_retention_seconds", 2_592_001),
+        ("pre_auth_bucket_size", 0),
+        ("pre_auth_max_tracked_clients", 100_001),
+        ("audit_denial_rows_per_subject_per_minute", 101),
     ],
 )
 def test_phase_three_settings_are_bounded(field: str, invalid_value: int) -> None:

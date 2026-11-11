@@ -94,7 +94,9 @@ def test_migration_persists_on_a_fresh_scratch_database() -> None:
         expected_privileges: dict[str, set[str]] = {
             "alembic_version": set(),
             "audit_records": {"SELECT", "INSERT"},
+            "identity_status": {"SELECT"},
             "organizations": {"SELECT", "INSERT", "UPDATE"},
+            "rate_limit_windows": {"SELECT", "INSERT", "UPDATE", "DELETE"},
         }
         all_privileges = {
             "SELECT",
@@ -148,7 +150,9 @@ async def test_runtime_table_privileges_match_explicit_allowlist() -> None:
     expected_table_privileges: dict[str, set[str]] = {
         "alembic_version": set(),
         "audit_records": {"SELECT", "INSERT"},
+        "identity_status": {"SELECT"},
         "organizations": {"SELECT", "INSERT", "UPDATE"},
+        "rate_limit_windows": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     }
     privileges: tuple[str, ...] = (
         "SELECT",
@@ -256,16 +260,19 @@ async def test_migrated_empty_database_has_foundation_tables() -> None:
                 text(
                     "SELECT table_name FROM information_schema.tables "
                     "WHERE table_schema = 'public' "
-                    "AND table_name IN ('organizations', 'audit_records', 'alembic_version')"
+                    "AND table_name IN ('organizations', 'audit_records', 'identity_status', "
+                    "'rate_limit_windows', 'alembic_version')"
                 )
             )
             assert {row[0] for row in rows} == {
                 "organizations",
                 "audit_records",
+                "identity_status",
+                "rate_limit_windows",
                 "alembic_version",
             }
             revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == "0002_runtime_table_privileges"
+            assert revision == "0003_identity_rate_revocation"
     finally:
         await engine.dispose()
 

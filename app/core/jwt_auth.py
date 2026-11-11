@@ -16,6 +16,7 @@ from app.core.identity import Principal
 from app.core.settings import Settings
 
 logger = logging.getLogger(__name__)
+logger.disabled = True
 
 MAX_TOKEN_BYTES = 16_384
 MAX_CLAIMS = 32
@@ -246,7 +247,7 @@ class TokenValidator:
         organization_value = claims.get("organization_id")
         roles_value = claims.get("roles")
         scope_value = claims.get("scope")
-        if not isinstance(subject, str) or not subject or len(subject) > 256:
+        if not isinstance(subject, str) or not subject or len(subject) > 255:
             raise InvalidToken("invalid_subject_claim")
         if not isinstance(organization_value, str):
             raise InvalidToken("invalid_organization_claim")

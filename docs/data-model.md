@@ -137,6 +137,19 @@ erDiagram
         string target_ref
         datetime occurred_at
     }
+    IDENTITY_STATUS {
+        uuid organization_id PK,FK
+        string subject PK
+        datetime disabled_at
+        datetime tokens_valid_after
+    }
+    RATE_LIMIT_WINDOW {
+        uuid organization_id PK,FK
+        string subject PK
+        string route_class PK
+        datetime window_start PK
+        integer request_count
+    }
 ```
 
 ## Keys and constraints
@@ -154,6 +167,11 @@ erDiagram
 - `inventory_asset`: unique `(organization_id, asset_ref)`; index `(organization_id, asset_type, asset_ref)`.
 - `cbom_snapshot`: unique `(organization_id, snapshot_ref)`; index `(organization_id, created_at DESC)`. Generation reads only the authenticated tenant's inventory and records its inventory version/as-of time, provenance, and digest. Store bounded validated metadata; reject secrets and plaintext sensitive payloads.
 - `audit_record`: index `(organization_id, occurred_at DESC, id DESC)` and `(organization_id, actor_subject, occurred_at DESC)`. Application role cannot update/delete audit facts.
+
+- `identity_status`: primary key `(organization_id, subject)`; a missing row permits access. `disabled_at` disables the subject, and `tokens_valid_after` rejects validated tokens whose `iat` is earlier. Roles/scopes remain token-derived; this is not a role-assignment table. The runtime role has SELECT only; administrators update rows as the owner role through the procedure in [ADR-0013](./adr/0013-subject-revocation-and-authentication-telemetry.md).
+- `rate_limit_windows`: primary key `(organization_id, subject, route_class, window_start)`; one atomic upsert increments the fixed-window counter. Route classes come only from the endpoint permission policy. The runtime role has SELECT, INSERT, UPDATE, and DELETE; DELETE is limited to the configured expired-window cleanup.
+
+`audit_records` is unchanged: `organization_id` remains NOT NULL with its organization FK, and `actor_subject` remains NOT NULL. The runtime role retains SELECT and INSERT only. Authentication failures before a trusted identity exists are security telemetry, never audit rows; do not add an anonymous actor, system organization, or nullable audit identity. Authorization denials and known-subject revocations are audit rows; unknown organizations and unauthenticated failures are telemetry only.
 
 All unique identities include `organization_id`, preventing global uniqueness collisions from becoming a cross-tenant information channel. Enforce length, enum, and numeric-range constraints in both application validation and the database where practical. Event attributes are typed, event-discriminated, size-bounded JSONB with `extra=forbid`; common attributes include no plaintext identity data or PAN. JSONB feature snapshots are schema-validated, size-bounded, non-sensitive facts. `correlation_id` is not an authorization key.
 

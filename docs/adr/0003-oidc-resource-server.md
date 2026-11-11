@@ -15,6 +15,8 @@ JWKS retrieval is asynchronous, uses the fixed `QUBRIX_JWKS_URL`, does not follo
 
 Unknown key, invalid token, or unavailable JWKS fails authentication closed. Cache/refetch JWKS under bounded policy without accepting an unverified token during outages. Return `WWW-Authenticate: Bearer` on every 401. Do not implement local password authentication.
 
+After signature and claim validation, map `organization_id` through provisioned organizations and apply per-subject disablement/token revocation from `identity_status`; roles and scopes still come only from the validated token. See [ADR-0013](./0013-subject-revocation-and-authentication-telemetry.md) for revocation caching and audit-versus-telemetry rules.
+
 ## Consequences
 
 - API routes require explicit role and scope, plus object-level organization checks.

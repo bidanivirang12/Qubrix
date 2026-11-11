@@ -10,3 +10,4 @@ class Principal:
     organization_id: UUID
     roles: frozenset[str]
     scopes: frozenset[str]
+    issued_at: float = 0.0
