@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16.10-bookworm
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the local environment}
@@ -8,13 +9,17 @@ services:
       OWNER_DB_PASSWORD: ${OWNER_DB_PASSWORD:?Set OWNER_DB_PASSWORD in the local environment}
       RUNTIME_DB_PASSWORD: ${RUNTIME_DB_PASSWORD:?Set RUNTIME_DB_PASSWORD in the local environment}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - qubrix-postgres:/var/lib/postgresql/data
       - ./scripts/bootstrap_db.sql:/docker/bootstrap_db.sql:ro
       - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/00-create-runtime.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U postgres -d postgres && psql -U postgres -d qubrix_test -tAc \"SELECT has_database_privilege('qubrix_runtime', current_database(), 'CONNECT') AND has_schema_privilege('qubrix_runtime', 'public', 'USAGE') AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'qubrix_app')\" | grep -qx t",
+        ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -22,15 +27,60 @@ services:
   migrate:
     build:
       context: .
-      target: build
+      target: migrate
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST: "true"
       TEST_DATABASE_URL: postgresql+psycopg://qubrix_app:${OWNER_DB_PASSWORD:?Set OWNER_DB_PASSWORD}@postgres:5432/qubrix_test
-    command: ["uv", "run", "--frozen", "alembic", "upgrade", "head"]
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
     restart: "no"
+
+  backend:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      QUBRIX_ENVIRONMENT: development
+      QUBRIX_APP_SECRET: ${QUBRIX_APP_SECRET:?Set QUBRIX_APP_SECRET in the local environment}
+      RUNTIME_DATABASE_URL: postgresql+psycopg://qubrix_runtime:${RUNTIME_DB_PASSWORD:?Set RUNTIME_DB_PASSWORD in the local environment}@postgres:5432/qubrix_test
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
 volumes:
   qubrix-postgres:

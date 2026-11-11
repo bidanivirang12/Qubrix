@@ -151,8 +151,9 @@ class TokenValidator:
                     UnicodeError,
                     ValueError,
                 ) as error:
+                    previous_failure_at = self._last_refresh_failure_at
                     self._last_refresh_failure_at = now
-                    if self._has_usable_stale_key(key_id, now):
+                    if previous_failure_at is None and self._has_usable_stale_key(key_id, now):
                         return self._keys[key_id]
                     raise JwksUnavailable(
                         "configured JWKS endpoint could not be refreshed"

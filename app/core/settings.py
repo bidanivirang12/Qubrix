@@ -131,7 +131,7 @@ class Settings(BaseSettings):
                 )
             )
         ):
-            raise ValueError("jwks_url must be HTTPS, except for an HTTP localhost test URL")
+            raise ValueError("jwks_url must be an HTTPS URL")
         return value
 
     @model_validator(mode="after")
