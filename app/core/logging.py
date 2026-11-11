@@ -15,7 +15,9 @@ SENSITIVE_KEY = re.compile(
     r"runtime_database_url|test_database_url)"
 )
 JWT_LIKE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
-BEARER_CREDENTIAL = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")
+BEARER_CREDENTIAL = re.compile(
+    r"(?i)\bBearer\s+(?:[A-Za-z0-9_-]+\.[A-Za-z0-9._~+/=-]+|[A-Za-z0-9._~+/=-]{20,})"
+)
 URL_CREDENTIALS = re.compile(r"(://[^:/\s]+:)[^@/\s]+(?=@|/|$)")
 
 # Only these structured fields are ever written to the log output.
