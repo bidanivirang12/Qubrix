@@ -4,7 +4,7 @@
 
 This STRIDE review covers the v1 HTTP resource server, event and crypto APIs, tenant-scoped PostgreSQL state, TrustShield assessments/findings, EncryptPlus and its key provider, OIDC/JWKS trust, and the CI/build/deployment supply chain. The threat rows describe design risks, not verified exploitability or regulatory compliance.
 
-Likelihood and impact are qualitative design estimates: **Low**, **Medium**, or **High**. **Designed** means a control is specified in the design but is not yet demonstrated by implementation; **pending implementation** means code/configuration and tests remain to be delivered; **accepted risk** means the residual risk is explicitly retained with the stated gate/mitigation. None of these labels means a control has passed a test.
+Likelihood and impact are qualitative design estimates: **Low**, **Medium**, or **High**. **Designed** means a control is specified in the design but is not yet demonstrated by implementation; **pending implementation** means code/configuration and tests remain to be delivered; **implemented, unverified** means code and tests are present but have not passed local verification; **accepted risk** means the residual risk is explicitly retained with the stated gate/mitigation. None of these labels means a control has passed a test.
 
 ## Sensitive assets
 
@@ -55,9 +55,9 @@ Every row has a likelihood, impact, status, and named control(s). Control names 
 
 | Threat | STRIDE | Scenario | Likelihood | Impact | Status | Controls |
 |---|---|---|---|---|---|---|
-| Account takeover and JWT algorithm confusion, including `alg=none` | Spoofing, Elevation of Privilege | Forged/altered bearer token is accepted or stolen token is misused | Medium | High | pending implementation | C-01 JWT/JWKS validation; C-22 JWT algorithm and issuer policy |
-| Tenant or role claim confusion | Elevation of Privilege, Information Disclosure | Untrusted issuer, claim mapping, or body value changes tenant or permission | Medium | High | pending implementation | C-02 Trusted identity claims; C-03 Route/object authorization; C-23 Claim-to-tenant mapping |
-| JWKS cache poisoning or SSRF via issuer/JWKS URL configuration | Spoofing, Tampering, Denial of Service | Attacker-controlled metadata redirects key fetch or poisons cache | Low | High | pending implementation | C-01 JWT/JWKS validation; C-24 Pinned issuer and JWKS fetch policy |
+| Account takeover and JWT algorithm confusion, including `alg=none` | Spoofing, Elevation of Privilege | Forged/altered bearer token is accepted or stolen token is misused | Medium | High | implemented, unverified | C-01 JWT/JWKS validation; C-22 JWT algorithm and issuer policy |
+| Tenant or role claim confusion | Elevation of Privilege, Information Disclosure | Untrusted issuer, claim mapping, or body value changes tenant or permission | Medium | High | implemented, unverified | C-02 Trusted identity claims; C-03 Route/object authorization; C-23 Claim-to-tenant mapping |
+| JWKS cache poisoning or SSRF via issuer/JWKS URL configuration | Spoofing, Tampering, Denial of Service | Attacker-controlled metadata redirects key fetch or poisons cache | Low | High | implemented, unverified | C-01 JWT/JWKS validation; C-24 Pinned issuer and JWKS fetch policy |
 | Broken object-level authorization | Elevation of Privilege, Information Disclosure | Caller guesses another tenant's event, finding, assessment, key, or CBOM ID | Medium | High | pending implementation | C-03 Route/object authorization; C-04 Tenant-scoped persistence |
 | Forged event and signed-field ambiguity | Spoofing, Tampering | Client changes an event, field, or organization while retaining a signature | Medium | High | pending implementation | C-05 Strict event schemas; C-06 Canonical signed-message verification |
 | Signature canonicalization ambiguity or unbound fields | Tampering, Repudiation | Different parsers canonicalize differently, duplicate JSON keys, or a material field is omitted from signature | Medium | High | pending implementation | C-06 Canonical signed-message verification |
@@ -95,8 +95,8 @@ Each row includes qualitative likelihood/impact, status, and the control name be
 
 | Threat | STRIDE | Scenario | Likelihood | Impact | Status | Controls |
 |---|---|---|---|---|---|---|
-| JWT algorithm confusion / stolen token | Spoofing, Elevation of Privilege | `alg=none`, key confusion, or credential theft gains API access | Medium | High | pending implementation | C-01 JWT/JWKS validation; C-22 JWT algorithm and issuer policy |
-| Claim confusion / broken object authorization | Elevation of Privilege, Information Disclosure | Forged tenant/role context or guessed resource ID crosses tenant | Medium | High | pending implementation | C-02 Trusted identity claims; C-03 Route/object authorization; C-23 Claim-to-tenant mapping |
+| JWT algorithm confusion / stolen token | Spoofing, Elevation of Privilege | `alg=none`, key confusion, or credential theft gains API access | Medium | High | implemented, unverified | C-01 JWT/JWKS validation; C-22 JWT algorithm and issuer policy |
+| Claim confusion / broken object authorization | Elevation of Privilege, Information Disclosure | Forged tenant/role context or guessed resource ID crosses tenant | Medium | High | implemented, unverified | C-02 Trusted identity claims; C-03 Route/object authorization; C-23 Claim-to-tenant mapping |
 | Forged, ambiguous, or replayed signed event | Spoofing, Tampering | Changed canonical fields, omitted nonce, event ID replay, or algorithm fallback accepted | Medium | High | pending implementation | C-06 Canonical signed-message verification; C-09 Replay identities; C-26 No downgrade/provider fallback |
 | Event-ID conflict finding/alert abuse | Denial of Service, Tampering | Repeated distinct conflict keys create FLAG findings linked to the original event or overwhelm alerts | Medium | Medium | pending implementation | C-38 Conflict finding isolation; C-30 Alert volume controls |
 | Uncommitted 409 conflict response | Repudiation, Tampering | API sends conflict response before its finding/idempotency result commits | Low | High | pending implementation | C-39 Atomic conflict response |

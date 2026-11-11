@@ -59,7 +59,26 @@ the explicit `QUBRIX_ALLOW_NONLOCAL_TEST_DATABASE_HOST=true` opt-in. Do not set
 that opt-in in production. Alembic and the test-session fixture verify
 `current_database()` after connecting before doing migration or fixture work.
 
-For Compose, set `POSTGRES_PASSWORD`, `OWNER_DB_PASSWORD`, and
-`RUNTIME_DB_PASSWORD` in the environment before running `docker compose up`.
-The PostgreSQL initialization wrapper invokes the same
-[`bootstrap_db.sql`](../scripts/bootstrap_db.sql) script used in CI.
+## Local Docker Compose stack
+
+The Compose stack is for local development, not production. Create `.env` from
+`.env.example`, then generate unique values for `POSTGRES_PASSWORD`,
+`OWNER_DB_PASSWORD`, `RUNTIME_DB_PASSWORD`, and `QUBRIX_APP_SECRET`. Do not
+commit `.env` or reuse these credentials elsewhere.
+
+Run `docker compose config --quiet` to validate interpolation without printing
+resolved environment values, then `docker compose up --build -d`. The
+PostgreSQL initialization wrapper invokes the same
+[`bootstrap_db.sql`](../scripts/bootstrap_db.sql) script used in CI. The
+migration job intentionally targets `qubrix_test`: Alembic and the test harness
+reject migrations against non-test databases. The local backend uses the
+restricted runtime role on that migrated database; do not carry this test
+database arrangement into production.
+
+The frontend is served by Nginx on `http://localhost:8080`. It proxies `/api/`
+and `/health/` to the backend over Compose's private network. The backend is
+also available on `http://localhost:8000`, and PostgreSQL on
+`localhost:5433`; both host bindings are loopback-only. PostgreSQL data is kept
+in the named `qubrix-postgres` volume. Stopping containers does not remove that
+volume; the init scripts run only when PostgreSQL first initializes an empty
+data directory.

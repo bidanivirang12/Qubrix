@@ -8,6 +8,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.auth_dependencies import AuthenticationRequired, IdentityProviderUnavailable
+from app.core.authorization import AuthorizationDenied
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +44,38 @@ def problem_response(
 
 
 def install_problem_handlers(app: FastAPI) -> None:
+    @app.exception_handler(AuthenticationRequired)
+    async def authentication_error(request: Request, _exc: AuthenticationRequired) -> JSONResponse:
+        return problem_response(
+            request,
+            status=401,
+            code="unauthenticated",
+            title="Unauthorized",
+            detail="Authentication is required.",
+        )
+
+    @app.exception_handler(IdentityProviderUnavailable)
+    async def identity_provider_error(
+        request: Request, _exc: IdentityProviderUnavailable
+    ) -> JSONResponse:
+        return problem_response(
+            request,
+            status=503,
+            code="dependency_unavailable",
+            title="Service Unavailable",
+            detail="A required dependency is unavailable.",
+        )
+
+    @app.exception_handler(AuthorizationDenied)
+    async def authorization_error(request: Request, _exc: AuthorizationDenied) -> JSONResponse:
+        return problem_response(
+            request,
+            status=403,
+            code="forbidden",
+            title="Forbidden",
+            detail="The authenticated identity is not authorized for this operation.",
+        )
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _exc: RequestValidationError) -> JSONResponse:
         return problem_response(
