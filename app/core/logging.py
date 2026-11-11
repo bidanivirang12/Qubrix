@@ -8,11 +8,34 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 SENSITIVE_KEY = re.compile(
-    r"(?i)(password|passwd|secret|token|authorization|cookie|plaintext|pan|"
-    r"private[_-]?key|database_url|runtime_database_url|test_database_url)"
+    r"(?i)(password|passwd|secret|authorization|cookie|plaintext|"
+    r"(?:^|[_.\-])(?:access|refresh|session|auth|bearer|jwt)[_.-]?token(?:$|[_.\-])|"
+    r"(?:^|[_.\-])token(?:[_.-](?:value|id|secret|key|hash))(?=$|[_.\-])|"
+    r"(?:^|[_.\-])pan(?:$|[_.\-])|private[_-]?key|database_url|"
+    r"runtime_database_url|test_database_url)"
 )
-BEARER_TOKEN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-URL_CREDENTIALS = re.compile(r"(://[^:/\s]+:)[^@/\s]+(@)")
+JWT_LIKE = re.compile(r"\b[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\b")
+BEARER_CREDENTIAL = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{2,}")
+URL_CREDENTIALS = re.compile(r"(://[^:/\s]+:)[^@/\s]+(?=@|/|$)")
+
+# Only these structured fields are ever written to the log output.
+SAFE_EXTRA_FIELDS = (
+    "request_id",
+    "correlation_id",
+    "event",
+    "auth_reason",
+    "route",
+    "status_code",
+    "operation",
+    "error_category",
+    "duration_ms",
+)
+
+
+def _redact_text(value: str) -> str:
+    value = JWT_LIKE.sub("[REDACTED]", value)
+    value = BEARER_CREDENTIAL.sub("Bearer [REDACTED]", value)
+    return URL_CREDENTIALS.sub(r"\1[REDACTED]", value)
 
 
 def redact(value: Any) -> Any:
@@ -27,7 +50,7 @@ def redact(value: Any) -> Any:
         items = cast(list[object] | tuple[object, ...], value)
         return [redact(item) for item in items]
     if isinstance(value, str):
-        return URL_CREDENTIALS.sub(r"\1[REDACTED]\2", BEARER_TOKEN.sub("Bearer [REDACTED]", value))
+        return _redact_text(value)
     return value
 
 
@@ -52,7 +75,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": redact(record.getMessage()),
         }
-        for key in ("request_id", "correlation_id", "event"):
+        for key in SAFE_EXTRA_FIELDS:
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = redact(value)

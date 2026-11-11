@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -143,11 +142,10 @@ async def test_jwks_unavailable_returns_generic_503(identity_provider: Any) -> N
 @pytest.mark.asyncio
 async def test_failed_auth_does_not_log_or_return_token_or_claim_values(
     identity_provider: Any,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     secret_value = "sensitive-claim-value-not-for-logs"
     token = identity_provider.token(claims={"sub": secret_value, "roles": ["ROOT"]})
-    caplog.set_level(logging.WARNING)
     async with api_client(identity_provider) as (_, client):
         response = await client.get(
             "/api/v1/whoami",
@@ -157,9 +155,11 @@ async def test_failed_auth_does_not_log_or_return_token_or_claim_values(
     assert response.status_code == 401
     assert token not in response.text
     assert secret_value not in response.text
-    assert token not in caplog.text
-    assert secret_value not in caplog.text
-    assert "unknown_role" in caplog.text
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert token not in combined
+    assert secret_value not in combined
+    assert "unknown_role" in combined
 
 
 @pytest.mark.asyncio

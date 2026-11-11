@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 from typing import Any
 
@@ -56,7 +58,7 @@ async def test_temporal_issuer_and_audience_claims_are_validated(
         ("qubrix-api", None),
         (["other-api", "qubrix-api"], None),
         (["other-api"], "audience_mismatch"),
-        (["qubrix-api", 42], "invalid_audience_claim"),
+        (["qubrix-api", 10], "invalid_audience_claim"),
     ],
 )
 async def test_audience_claim_accepts_string_or_matching_string_list(
@@ -126,19 +128,30 @@ async def test_empty_or_malformed_token_is_rejected(
         await token_validator.validate(token)
 
 
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _forge_hs256(header: dict[str, Any], payload: dict[str, Any], secret: bytes) -> str:
+    head = _b64url(json.dumps(header, separators=(",", ":")).encode())
+    body = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+    signing_input = f"{head}.{body}"
+    signature = hmac.new(secret, signing_input.encode("ascii"), hashlib.sha256).digest()
+    return f"{signing_input}.{_b64url(signature)}"
+
+
 @pytest.mark.asyncio
 async def test_hs256_signed_with_public_key_material_is_rejected(
     identity_provider: Any, token_validator: TokenValidator
 ) -> None:
-    public_key_material = json.dumps(identity_provider.rsa_key, sort_keys=True)
+    secret = json.dumps(identity_provider.rsa_key, sort_keys=True).encode()
+    token = _forge_hs256(
+        {"alg": "HS256", "typ": "JWT", "kid": "rsa-1"},
+        {"sub": "attacker"},
+        secret,
+    )
     with pytest.raises(InvalidToken, match="disallowed_algorithm"):
-        await token_validator.validate(
-            identity_provider.token(
-                algorithm="HS256",
-                signing_key=public_key_material,
-                key_id="rsa-1",
-            )
-        )
+        await token_validator.validate(token)
 
 
 @pytest.mark.asyncio
@@ -449,7 +462,6 @@ async def test_required_identity_claims_must_exist(
         ("roles", "SERVICE"),
         ("roles", ["SERVICE", 10]),
         ("scope", ["whoami:read"]),
-        ("aud", ["qubrix-api"]),
         ("iat", "today"),
     ],
 )
@@ -507,3 +519,33 @@ async def test_unexpected_nested_claim_type_is_rejected(
         await token_validator.validate(
             identity_provider.token(claims={"custom_claim": {"admin": True}})
         )
+
+
+@pytest.mark.asyncio
+async def test_expired_key_is_not_served_inside_refresh_rate_limit_window(
+    identity_provider: Any,
+) -> None:
+    token = identity_provider.token()
+    async with httpx.AsyncClient(transport=identity_provider.transport) as client:
+        validator = TokenValidator(
+            identity_provider.settings(
+                jwks_cache_lifetime_seconds=30,
+                jwks_stale_key_grace_seconds=20,
+            ),
+            client,
+            clock=lambda: identity_provider.wall_time,
+            monotonic_clock=lambda: identity_provider.monotonic_time,
+        )
+        await validator.validate(token)  # request 1: key cached
+        assert len(identity_provider.requests) == 1
+
+        identity_provider.status_code = 503
+        identity_provider.monotonic_time += 51.0  # past lifetime (30) plus grace (20)
+        with pytest.raises(JwksUnavailable):
+            await validator.validate(token)  # refresh attempted and fails; key too old
+        assert len(identity_provider.requests) == 2
+
+        identity_provider.monotonic_time += 1.0  # inside the 5 s refresh limit
+        with pytest.raises(JwksUnavailable):
+            await validator.validate(token)  # rate-limited; expired key must not be served
+        assert len(identity_provider.requests) == 2

@@ -133,47 +133,50 @@ class TokenValidator:
 
     async def _get_jwk(self, key_id: str) -> dict[str, Any]:
         now = self._monotonic_clock()
-        fresh = now < self._expires_at
-        if fresh and key_id in self._keys:
+        if key_id in self._keys and now < self._expires_at:
             return self._keys[key_id]
 
         async with self._refresh_lock:
             now = self._monotonic_clock()
-            fresh = now < self._expires_at
-            if fresh and key_id in self._keys:
+            if key_id in self._keys and now < self._expires_at:
                 return self._keys[key_id]
-            if now - self._last_refresh_at < MIN_REFRESH_INTERVAL_SECONDS:
-                if fresh:
+
+            if now - self._last_refresh_at >= MIN_REFRESH_INTERVAL_SECONDS:
+                self._last_refresh_at = now
+                try:
+                    keys = await self._fetch_jwks()
+                except (
+                    httpx.HTTPError,
+                    json.JSONDecodeError,
+                    UnicodeError,
+                    ValueError,
+                ) as error:
+                    self._last_refresh_failure_at = now
+                    if self._has_usable_stale_key(key_id, now):
+                        return self._keys[key_id]
+                    raise JwksUnavailable(
+                        "configured JWKS endpoint could not be refreshed"
+                    ) from error
+
+                self._keys = keys
+                self._expires_at = now + self._settings.jwks_cache_lifetime_seconds
+                self._last_refresh_failure_at = None
+                if key_id not in self._keys:
                     raise UnknownSigningKey
-                if self._has_usable_stale_key(key_id, now):
-                    return self._keys[key_id]
+                return self._keys[key_id]
+
+            # Refresh is rate-limited: only a key still inside its grace window may be used.
+            if self._has_usable_stale_key(key_id, now):
+                return self._keys[key_id]
+            if key_id in self._keys:
                 raise JwksUnavailable("JWKS cache expired and refresh is rate-limited")
-
-            self._last_refresh_at = now
-            try:
-                keys = await self._fetch_jwks()
-            except (
-                JwksUnavailable,
-                httpx.HTTPError,
-                json.JSONDecodeError,
-                UnicodeError,
-                ValueError,
-            ) as error:
-                self._last_refresh_failure_at = now
-                if self._has_usable_stale_key(key_id, now):
-                    return self._keys[key_id]
-                raise JwksUnavailable("configured JWKS endpoint could not be refreshed") from error
-
-            self._keys = keys
-            self._expires_at = now + self._settings.jwks_cache_lifetime_seconds
-            self._last_refresh_failure_at = None
-            if key_id not in self._keys:
-                raise UnknownSigningKey
-            return self._keys[key_id]
+            raise UnknownSigningKey
 
     def _has_usable_stale_key(self, key_id: str, now: float) -> bool:
-        stale_until = self._expires_at + self._settings.jwks_stale_key_grace_seconds
-        return key_id in self._keys and now < stale_until
+        if key_id not in self._keys:
+            return False
+        stale_deadline = self._expires_at + self._settings.jwks_stale_key_grace_seconds
+        return now < stale_deadline
 
     async def _fetch_jwks(self) -> dict[str, dict[str, Any]]:
         url = self._settings.jwks_url
