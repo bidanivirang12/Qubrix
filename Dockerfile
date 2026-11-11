@@ -23,6 +23,9 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y --only-upgrade zlib1g \
+    && rm -rf /var/lib/apt/lists/*
 RUN addgroup --system qubrix && adduser --system --ingroup qubrix --no-create-home qubrix
 COPY --from=build --chown=qubrix:qubrix /app/.venv /app/.venv
 COPY --chown=qubrix:qubrix app ./app
